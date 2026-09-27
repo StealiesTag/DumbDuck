@@ -19,10 +19,29 @@ import {
   runExecutionLogTests,
   runMCPInputTests,
 } from "./integration.test";
+import {
+  runConfigTests,
+  runMcpConfigTests,
+  runWorkspaceValidationTests,
+  runDoctorTests,
+  runProviderTests,
+} from "./setup.test";
+import {
+  runTokenAggregationTests,
+  runBaselineTests,
+  runSavingsTests,
+  runUsageEdgeCaseTests,
+  runMeasurementLabelTests,
+  runHostUsageTests,
+  runRedactionTests,
+  runJsonlPersistenceTests,
+  runMCPProtocolSafetyTests,
+  runNoDuplicatesTests,
+} from "./telemetry.test";
 import { runSuite } from "./helpers";
 
 async function main(): Promise<void> {
-  console.log("\nAI Execution Router — Test Suite (v0.3)");
+  console.log("\nAI Execution Router — Test Suite (v0.5)");
   console.log("=".repeat(54));
 
   let totalPassed = 0;
@@ -54,6 +73,25 @@ async function main(): Promise<void> {
   tally(runSuite("Delegation & SimpleAI", await runDelegationTests()));
   tally(runSuite("Execution Log",       await runExecutionLogTests()));
   tally(runSuite("MCP Input Handling",  await runMCPInputTests()));
+
+  // ── v0.4 suites (new) ───────────────────────────────────────────────────────
+  tally(runSuite("Config Load/Save",    runConfigTests()));
+  tally(runSuite("MCP Config Gen",      runMcpConfigTests()));
+  tally(runSuite("Workspace Validation",runWorkspaceValidationTests()));
+  tally(runSuite("Doctor Checks",       runDoctorTests()));
+  tally(runSuite("Provider Handling",   runProviderTests()));
+
+  // ── v0.5 suites (new) ───────────────────────────────────────────────────────
+  tally(runSuite("Token Aggregation",   await runTokenAggregationTests()));
+  tally(runSuite("Baseline Recording",  runBaselineTests()));
+  tally(runSuite("Savings Calculation", await runSavingsTests()));
+  tally(runSuite("Usage Edge Cases",    runUsageEdgeCaseTests()));
+  tally(runSuite("Measurement Labels",  await runMeasurementLabelTests()));
+  tally(runSuite("Host Usage (UNAVAIL)",await runHostUsageTests()));
+  tally(runSuite("Secret Redaction",    runRedactionTests()));
+  tally(runSuite("JSONL Persistence",   await runJsonlPersistenceTests()));
+  tally(runSuite("MCP Protocol Safety", runMCPProtocolSafetyTests()));
+  tally(runSuite("No Duplicate Records",await runNoDuplicatesTests()));
 
   console.warn = originalWarn;
 

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "ai-execution-router": {
+      "command": "npx",
+      "args": ["tsx", "C:/Users/ADMIN/Desktop/DumbDuck/ai-execution-router/src/mcp/server.ts"],
+      "env": {
+        "SIMPLE_AI_PROVIDER": "mock"
+      }
+    }
+  }
+}

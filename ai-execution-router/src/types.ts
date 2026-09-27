@@ -274,4 +274,94 @@ export interface TaskRecord {
   modelId?:         string;
   tokenUsage?:      TokenUsage;
   estimatedCostUsd?: never;    // never set until real pricing data is available
+
+  // ── v0.5: baseline / savings tracking ─────────────────────────────────────
+  /**
+   * ID of the baseline record this routed record is being compared against.
+   * Set by the caller after capturing both baseline and routed measurements.
+   */
+  baselineId?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v0.5 extensions — token savings measurement
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Describes where a token-usage figure came from.
+ * This matters because different sources have different reliability.
+ */
+export type UsageSource =
+  | "PROVIDER_REPORTED"    // Returned directly by the AI provider API
+  | "HOST_REPORTED"        // Reported by the host application (e.g. Bob's UI)
+  | "ESTIMATE"             // Calculated estimate, not from a real API call
+  | "UNAVAILABLE";         // Data is not accessible in this integration
+
+/**
+ * A token-usage measurement with full provenance.
+ */
+export interface MeasuredUsage {
+  promptTokens:      number | "UNAVAILABLE";
+  completionTokens:  number | "UNAVAILABLE";
+  totalTokens:       number | "UNAVAILABLE";
+  source:            UsageSource;
+  /** Provider or model that produced this usage (e.g. "gpt-4o-mini"). */
+  providerId?:       string;
+  /** Task or execution ID this measurement belongs to. */
+  executionId?:      string;
+  /** ISO timestamp when the measurement was recorded. */
+  recordedAt:        string;
+}
+
+/**
+ * A recorded baseline task — the same task completed WITHOUT the router.
+ * The caller must supply this; the router cannot observe Bob's own tool calls.
+ */
+export interface BaselineRecord {
+  /** Unique ID for this baseline measurement. */
+  id:               string;
+  /** Description of the task that was performed (must match routed equivalent). */
+  description:      string;
+  /** ISO timestamp when the baseline was recorded. */
+  recordedAt:       string;
+  /** Who recorded this baseline ("manual", "benchmark", "bob-hook", etc.). */
+  recordedBy:       string;
+  /** Full workflow token usage for the unrouted task. */
+  usage:            MeasuredUsage;
+  /** Free-text notes about how the baseline was measured. */
+  notes?:           string;
+}
+
+/**
+ * The type of savings measurement — determines how results should be interpreted.
+ */
+export type SavingsMeasurementType =
+  | "END_TO_END"   // Both baseline and routed cover the full workflow
+  | "PARTIAL"      // Only router-internal usage is measured; host usage is unknown
+  | "NOT_CALCULABLE"; // Missing, zero, or incomparable data
+
+/**
+ * Savings comparison between a baseline (unrouted) and a routed execution.
+ * Only calculated when both measurements are available and comparable.
+ */
+export interface SavingsComparison {
+  measurementType:  SavingsMeasurementType;
+
+  baselineId:       string;
+  routedId:         string;
+  taskDescription:  string;
+
+  baselineTotalTokens:  number | "UNAVAILABLE";
+  routedTotalTokens:    number | "UNAVAILABLE";
+
+  /** Positive means the routed path used fewer tokens. */
+  tokensSaved:          number | "NOT_CALCULABLE";
+  /** 0–100, or "NOT_CALCULABLE". */
+  percentSaved:         number | "NOT_CALCULABLE";
+
+  /** Explicit explanation of why the result is what it is. */
+  explanation:          string;
+
+  /** Any fields that are missing or estimated. */
+  caveats:              string[];
 }

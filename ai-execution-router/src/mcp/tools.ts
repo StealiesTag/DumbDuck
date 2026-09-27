@@ -146,10 +146,79 @@ export const TOOL_SCHEMAS = [
   },
   {
     name:        "get_execution_report",
-    description: "Return a JSON summary of all tasks routed in this session: counts by route and status, AI call counts, token usage (if any), and duration.",
+    description: "Return a JSON summary of all tasks routed in this session: counts by route and status, AI call counts, token usage (if any), and duration. Token totals cover the router's own provider calls only — host model usage is NOT included.",
     inputSchema: {
       type:       "object",
       properties: {},
+    },
+  },
+  {
+    name:        "record_baseline",
+    description: "Record a baseline token measurement for a task completed WITHOUT the router. Used to compare against a routed version of the same task. Caller must supply real token counts; mock or estimated values will be flagged as NOT_CALCULABLE in savings reports.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type:        "string",
+          description: "Unique ID for this baseline (auto-generated if omitted).",
+        },
+        description: {
+          type:        "string",
+          description: "Description of the task — should match the equivalent routed task.",
+        },
+        totalTokens: {
+          type:        "number",
+          description: "Total tokens consumed by the full unrouted workflow. Required for savings calculation.",
+        },
+        promptTokens: {
+          type:        "number",
+          description: "Prompt/input tokens (optional breakdown).",
+        },
+        completionTokens: {
+          type:        "number",
+          description: "Completion/output tokens (optional breakdown).",
+        },
+        source: {
+          type:        "string",
+          enum:        ["PROVIDER_REPORTED", "HOST_REPORTED", "ESTIMATE", "UNAVAILABLE"],
+          description: "Where this usage figure came from. PROVIDER_REPORTED or HOST_REPORTED required for savings calculation.",
+        },
+        providerId: {
+          type:        "string",
+          description: "Provider or model that generated the baseline (e.g. 'gpt-4o').",
+        },
+        executionId: {
+          type:        "string",
+          description: "ID of the original execution that produced this baseline.",
+        },
+        recordedBy: {
+          type:        "string",
+          description: "Who recorded this baseline ('manual', 'benchmark', 'bob-hook', etc.).",
+        },
+        notes: {
+          type:        "string",
+          description: "Free-text notes about how the baseline was measured.",
+        },
+      },
+      required: ["description"],
+    },
+  },
+  {
+    name:        "get_savings_report",
+    description: "Compare a baseline measurement against a routed task and report token savings. Will return NOT_CALCULABLE if baseline is missing, zero, or not from a real provider. Will return PARTIAL (never END_TO_END) because host model usage is not accessible via MCP.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        baselineId: {
+          type:        "string",
+          description: "ID of the baseline record (from record_baseline).",
+        },
+        routedTaskId: {
+          type:        "string",
+          description: "Task ID of the routed execution (from route_task).",
+        },
+      },
+      required: ["baselineId", "routedTaskId"],
     },
   },
 ];

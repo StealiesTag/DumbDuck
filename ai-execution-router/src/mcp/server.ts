@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// MCP Server — AI Execution Router
+// MCP Server — AI Execution Router  (v0.5)
 //
 // Exposes the router as an MCP STDIO server using the official MCP TypeScript SDK.
 // This is an integration layer around the existing router — it does not replace
@@ -10,8 +10,17 @@
 //
 // Connect from Bob or another MCP client via STDIO transport.
 //
+// v0.5 additions:
+//   - Per-call stderr diagnostics via src/mcp/diagnostics.ts
+//   - record_baseline tool — stores a baseline measurement
+//   - get_savings_report tool — computes and returns a savings comparison
+//   - All stderr output uses mcpDiag — stdout is never touched by diagnostics
+//
 // LIMITATION: The MCP server manages a SINGLE workspace per process.
 // Multiple concurrent clients sharing one server will share the workspace.
+//
+// LIMITATION: Bob's host-model token usage is NOT accessible from the MCP
+// server. All token reporting here covers the router's own provider calls only.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { Server }       from "@modelcontextprotocol/sdk/server/index.js";
@@ -29,13 +38,14 @@ import { getGitStatus, getGitDiff } from "../workspace/tools/gitOps";
 import { runWorkspaceTests }   from "../workspace/tools/runTests";
 import { routeTask }           from "../router/router";
 import { executionLog }        from "../log/executionLog";
-import { IncomingTask, TaskKind } from "../types";
+import { mcpDiag }             from "./diagnostics";
+import { IncomingTask, TaskKind, BaselineRecord, MeasuredUsage } from "../types";
 import { TOOL_SCHEMAS }        from "./tools";
 
 // ── Server instance ───────────────────────────────────────────────────────────
 
 const server = new Server(
-  { name: "ai-execution-router", version: "0.3.0" },
+  { name: "ai-execution-router", version: "0.5.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -49,86 +59,100 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args = {} } = request.params;
+  const execId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+  // Start diagnostic — writes to stderr, never stdout
+  mcpDiag.start(execId, name, args as Record<string, unknown>);
 
   try {
+    let result: ReturnType<typeof ok | typeof err>;
+
     switch (name) {
-      // ── set_workspace ──────────────────────────────────────────────────────
+      // ── set_workspace ────────────────────────────────────────────────────────
       case "set_workspace": {
         const rootPath = String(args.path ?? "");
-        if (!rootPath) return err("path is required");
+        if (!rootPath) { result = err("path is required"); break; }
         workspace.setWorkspace(rootPath);
-        return ok(`Workspace set to: ${workspace.getRoot()}`);
+        result = ok(`Workspace set to: ${workspace.getRoot()}`);
+        break;
       }
 
-      // ── list_files ─────────────────────────────────────────────────────────
+      // ── list_files ───────────────────────────────────────────────────────────
       case "list_files": {
         const dir = String(args.directory ?? ".");
         const res = listFiles(workspace, dir);
-        if (!res.ok) return err(res.error ?? "Unknown error");
+        if (!res.ok) { result = err(res.error ?? "Unknown error"); break; }
         const trunc = res.truncated ? `\n(truncated at ${res.count} entries)` : "";
-        return ok(`${res.count} entries in "${dir}":\n${res.entries.join("\n")}${trunc}`);
+        result = ok(`${res.count} entries in "${dir}":\n${res.entries.join("\n")}${trunc}`);
+        break;
       }
 
-      // ── read_file ──────────────────────────────────────────────────────────
+      // ── read_file ────────────────────────────────────────────────────────────
       case "read_file": {
         const filePath = String(args.path ?? "");
-        if (!filePath) return err("path is required");
+        if (!filePath) { result = err("path is required"); break; }
         const res = readWorkspaceFile(workspace, filePath);
-        if (!res.ok) return err(res.error ?? "Unknown error");
+        if (!res.ok) { result = err(res.error ?? "Unknown error"); break; }
         const trunc = res.truncated ? `\n(file truncated at 512 KB)` : "";
-        return ok(`${res.content}${trunc}`);
+        result = ok(`${res.content}${trunc}`);
+        break;
       }
 
-      // ── search_repository ──────────────────────────────────────────────────
+      // ── search_repository ────────────────────────────────────────────────────
       case "search_repository": {
         const pattern = String(args.pattern ?? "");
-        if (!pattern) return err("pattern is required");
+        if (!pattern) { result = err("pattern is required"); break; }
         const subDir = String(args.directory ?? ".");
         const res    = searchRepository(workspace, pattern, subDir);
-        if (!res.ok) return err(res.error ?? "Unknown error");
-        if (res.matches.length === 0) return ok(`No matches for "${pattern}"`);
+        if (!res.ok) { result = err(res.error ?? "Unknown error"); break; }
+        if (res.matches.length === 0) { result = ok(`No matches for "${pattern}"`); break; }
         const lines  = res.matches
           .map((m) => `${m.file}:${m.line}: ${m.content}`)
           .join("\n");
         const trunc  = res.truncated ? `\n(results truncated at ${res.totalMatches})` : "";
-        return ok(`${res.totalMatches} match(es) for "${pattern}":\n${lines}${trunc}`);
+        result = ok(`${res.totalMatches} match(es) for "${pattern}":\n${lines}${trunc}`);
+        break;
       }
 
-      // ── get_git_status ─────────────────────────────────────────────────────
+      // ── get_git_status ───────────────────────────────────────────────────────
       case "get_git_status": {
         const res = getGitStatus(workspace);
-        if (!res.ok) return err(res.error ?? "Unknown error");
-        return ok(res.output || "(clean)");
+        if (!res.ok) { result = err(res.error ?? "Unknown error"); break; }
+        result = ok(res.output || "(clean)");
+        break;
       }
 
-      // ── get_git_diff ───────────────────────────────────────────────────────
+      // ── get_git_diff ─────────────────────────────────────────────────────────
       case "get_git_diff": {
         const staged = args.staged === true;
         const res    = getGitDiff(workspace, staged);
-        if (!res.ok) return err(res.error ?? "Unknown error");
-        return ok(res.output || "(no diff)");
+        if (!res.ok) { result = err(res.error ?? "Unknown error"); break; }
+        result = ok(res.output || "(no diff)");
+        break;
       }
 
-      // ── run_tests ──────────────────────────────────────────────────────────
+      // ── run_tests ────────────────────────────────────────────────────────────
       case "run_tests": {
         const suite = String(args.suite ?? "npm-test");
         const res   = runWorkspaceTests(workspace, suite);
         if (res.status === "NEEDS_APPROVAL") {
-          return err(
+          result = err(
             `Suite "${res.requestedSuite}" requires approval. ` +
             `Approved suites: ${res.approvedSuites?.join(", ")}`
           );
+          break;
         }
         const out  = res.stdout.trim() || "(no stdout)";
         const serr = res.stderr.trim() ? `\nStderr:\n${res.stderr}` : "";
-        return ok(`[${res.status}] exit=${res.exitCode} ${res.durationMs}ms\n${out}${serr}`);
+        result = ok(`[${res.status}] exit=${res.exitCode} ${res.durationMs}ms\n${out}${serr}`);
+        break;
       }
 
-      // ── route_task ─────────────────────────────────────────────────────────
+      // ── route_task ───────────────────────────────────────────────────────────
       case "route_task": {
         const taskId      = String(args.taskId ?? `mcp-${Date.now()}`);
         const description = String(args.description ?? "");
-        if (!description) return err("description is required");
+        if (!description) { result = err("description is required"); break; }
 
         const kind          = (args.kind as TaskKind) ?? "UNKNOWN";
         const workspaceRoot = workspace.getRoot() ?? undefined;
@@ -150,43 +174,137 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         const record = await routeTask(task, 0);
 
+        // Report token usage in the completion diagnostic
+        mcpDiag.complete(execId, {
+          route:      record.route,
+          status:     record.status,
+          durationMs: record.durationMs,
+          tokenUsage: record.tokenUsage ?? null,
+          isMock:     record.executorName === "simple-ai-mock",
+        });
+
         return ok(JSON.stringify({
-          taskId:          record.taskId,
-          route:           record.route,
-          status:          record.status,
-          executorName:    record.executorName,
+          taskId:           record.taskId,
+          route:            record.route,
+          status:           record.status,
+          executorName:     record.executorName,
           classifierSource: record.classifierSource,
-          confidence:      record.confidence,
-          decisionPath:    record.decisionPath,
-          durationMs:      record.durationMs,
-          output:          record.output,
-          delegation:      record.delegation,
-          error:           record.error,
+          confidence:       record.confidence,
+          decisionPath:     record.decisionPath,
+          durationMs:       record.durationMs,
+          output:           record.output,
+          delegation:       record.delegation,
+          error:            record.error,
+          tokenUsage:       record.tokenUsage ?? null,
+          tokenCoverage:    record.tokenUsage
+            ? "PARTIAL — router provider call only; host model usage unavailable"
+            : "UNAVAILABLE",
         }, null, 2));
       }
 
-      // ── get_execution_report ───────────────────────────────────────────────
+      // ── get_execution_report ─────────────────────────────────────────────────
       case "get_execution_report": {
         const report = executionLog.generateReport();
-        return ok(JSON.stringify(report, null, 2));
+        result = ok(JSON.stringify(report, null, 2));
+        break;
+      }
+
+      // ── record_baseline ──────────────────────────────────────────────────────
+      case "record_baseline": {
+        const id          = String(args.id ?? `baseline-${Date.now()}`);
+        const description = String(args.description ?? "");
+        if (!description) { result = err("description is required"); break; }
+
+        const totalTokens  = args.totalTokens;
+        const promptTokens = args.promptTokens;
+        const completionTokens = args.completionTokens;
+
+        const hasRealData = typeof totalTokens === "number" && totalTokens > 0;
+
+        const usage: MeasuredUsage = {
+          promptTokens:     typeof promptTokens     === "number" ? promptTokens     : "UNAVAILABLE",
+          completionTokens: typeof completionTokens === "number" ? completionTokens : "UNAVAILABLE",
+          totalTokens:      typeof totalTokens      === "number" ? totalTokens      : "UNAVAILABLE",
+          source:           String(args.source ?? (hasRealData ? "HOST_REPORTED" : "UNAVAILABLE")) as MeasuredUsage["source"],
+          providerId:       args.providerId ? String(args.providerId) : undefined,
+          executionId:      args.executionId ? String(args.executionId) : undefined,
+          recordedAt:       new Date().toISOString(),
+        };
+
+        const baseline: BaselineRecord = {
+          id,
+          description,
+          recordedAt:  new Date().toISOString(),
+          recordedBy:  String(args.recordedBy ?? "mcp-client"),
+          usage,
+          notes:       args.notes ? String(args.notes) : undefined,
+        };
+
+        executionLog.recordBaseline(baseline);
+
+        result = ok(JSON.stringify({
+          baselineId:  id,
+          description,
+          recorded:    true,
+          usage,
+          note:        hasRealData
+            ? "Baseline recorded with real token data. Use get_savings_report to compare."
+            : "Baseline recorded but total_tokens is missing or zero. " +
+              "Savings cannot be calculated without a real baseline token count.",
+        }, null, 2));
+        break;
+      }
+
+      // ── get_savings_report ───────────────────────────────────────────────────
+      case "get_savings_report": {
+        const baselineId   = String(args.baselineId ?? "");
+        const routedTaskId = String(args.routedTaskId ?? "");
+
+        if (!baselineId)   { result = err("baselineId is required");   break; }
+        if (!routedTaskId) { result = err("routedTaskId is required"); break; }
+
+        const comparison = executionLog.calculateSavings(baselineId, routedTaskId);
+
+        result = ok(JSON.stringify({
+          ...comparison,
+          interpreting: comparison.measurementType === "NOT_CALCULABLE"
+            ? "Savings cannot be calculated with the available data. See caveats."
+            : comparison.measurementType === "PARTIAL"
+            ? "PARTIAL measurement only. Do NOT interpret as end-to-end savings. " +
+              "Host model (Bob) usage is not included."
+            : "END_TO_END measurement. Both baseline and routed cover the full workflow.",
+        }, null, 2));
+        break;
       }
 
       default:
-        return err(`Unknown tool: ${name}`);
+        result = err(`Unknown tool: ${name}`);
     }
+
+    // Complete diagnostic for all non-route_task tools
+    // (route_task calls mcpDiag.complete itself to include token info)
+    if (name !== "route_task") {
+      mcpDiag.complete(execId, {
+        status: result.isError ? "FAILED" : "SUCCEEDED",
+      });
+    }
+
+    return result;
+
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    mcpDiag.fail(execId, e);
     return err(msg);
   }
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function ok(text: string) {
+function ok(text: string): { content: { type: "text"; text: string }[] } {
   return { content: [{ type: "text" as const, text }] };
 }
 
-function err(message: string) {
+function err(message: string): { content: { type: "text"; text: string }[]; isError: true } {
   return {
     content: [{ type: "text" as const, text: `Error: ${message}` }],
     isError: true,
@@ -198,11 +316,15 @@ function err(message: string) {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  // Log to stderr only — stdout is reserved for MCP protocol messages
-  process.stderr.write("[ai-execution-router MCP] Server started on STDIO\n");
+  // Startup message to stderr only — never stdout
+  process.stderr.write(
+    "[ai-execution-router MCP v0.5] Server started on STDIO\n" +
+    `[ai-execution-router MCP v0.5] Diagnostics: stderr${process.env.EXECUTION_LOG_PATH ? ` + ${process.env.EXECUTION_LOG_PATH}` : ""}\n` +
+    `[ai-execution-router MCP v0.5] Set MCP_DIAGNOSTICS=0 to suppress stderr output\n`
+  );
 }
 
-main().catch((err) => {
-  process.stderr.write(`[ai-execution-router MCP] Fatal: ${err}\n`);
+main().catch((e) => {
+  process.stderr.write(`[ai-execution-router MCP] Fatal: ${e}\n`);
   process.exit(1);
 });

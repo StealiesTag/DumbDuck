@@ -1,7 +1,7 @@
 ============================================================
 AI Execution Router — Training Evaluation Report
 ============================================================
-Trained at:           2026-09-27T04:15:23.986269+00:00
+Trained at:           2026-09-27T04:22:40.556213+00:00
 Dataset:              dataset.csv  (31 rows)
 Feature columns (8): reasoningLevel, generationLevel, contextSizeTier, ambiguityTier, filesInvolved, hasErrorMessage, hasCodeSnippet, descriptionLength
 Class labels:         ['SIMPLE_AI', 'COMPLEX_AI']

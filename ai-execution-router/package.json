@@ -6,6 +6,8 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "mcp:start": "tsx src/mcp/server.ts",
+    "setup": "tsx src/setup/setup.ts",
+    "doctor": "tsx src/setup/doctor.ts",
     "test": "tsx src/tests/runner.ts"
   },
   "devDependencies": {
