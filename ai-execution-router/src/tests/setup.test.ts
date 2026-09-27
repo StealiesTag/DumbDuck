@@ -19,6 +19,7 @@ import {
   validateWorkspacePath,
   PROJECT_ROOT,
 } from "../setup/config";
+import { hasRouterAgentInstructions, installRouterAgentInstructions } from "../setup/agentInstructions";
 
 import {
   checkNodeVersion,
@@ -125,6 +126,10 @@ export function runMcpConfigTests(): TestResult[] {
   const results: TestResult[] = [];
   const fakeRoot = "/fake/project";
 
+  const defaultEntry = generateBobMcpEntry(fakeRoot);
+  results.push(assertEqual(defaultEntry["ai-execution-router"].env?.SIMPLE_AI_PROVIDER, "gemini",
+    "generateBobMcpEntry: defaults to the Gemini provider"));
+
   // ── generateBobMcpEntry returns correctly shaped entry ────────────────────
   const entry = generateBobMcpEntry(fakeRoot, "mock");
   const record = entry["ai-execution-router"];
@@ -142,8 +147,8 @@ export function runMcpConfigTests(): TestResult[] {
   // ── openai provider adds placeholder key reference ────────────────────────
   const openaiEntry = generateBobMcpEntry(fakeRoot, "openai");
   const openaiRecord = openaiEntry["ai-execution-router"];
-  results.push(assert(
-    openaiRecord.env?.OPENAI_API_KEY?.includes("OPENAI_API_KEY"),
+    results.push(assert(
+      openaiRecord.env?.OPENAI_API_KEY?.includes("OPENAI_API_KEY") === true,
     "generateBobMcpEntry: openai adds OPENAI_API_KEY placeholder"
   ));
 
@@ -191,6 +196,32 @@ export function runMcpConfigTests(): TestResult[] {
     "mergeBobMcpJson: treats corrupt JSON as empty (no conflict)"));
   results.push(assert(JSON.parse(fromCorrupt).mcpServers?.["ai-execution-router"] !== undefined,
     "mergeBobMcpJson: produces valid JSON from corrupt input"));
+
+  return results;
+}
+
+export function runAgentInstructionTests(): TestResult[] {
+  const results: TestResult[] = [];
+  const tmp = makeTempDir();
+
+  try {
+    const existing = "# Project guidance\n\nKeep current conventions.\n";
+    fs.writeFileSync(path.join(tmp, "AGENTS.md"), existing, "utf-8");
+
+    const instructionsPath = installRouterAgentInstructions(tmp);
+    const installed = fs.readFileSync(instructionsPath, "utf-8");
+    results.push(assert(installed.startsWith(existing.trimEnd()),
+      "agent instructions: preserves existing AGENTS.md content"));
+    results.push(assert(hasRouterAgentInstructions(tmp),
+      "agent instructions: doctor helper detects installed guidance"));
+
+    installRouterAgentInstructions(tmp);
+    const updated = fs.readFileSync(instructionsPath, "utf-8");
+    results.push(assertEqual(updated, installed,
+      "agent instructions: repeated setup is idempotent"));
+  } finally {
+    rmTempDir(tmp);
+  }
 
   return results;
 }
@@ -298,6 +329,7 @@ export function runDoctorTests(): TestResult[] {
     // Save and clear the env var to ensure reproducibility
     const savedProvider = process.env.SIMPLE_AI_PROVIDER;
     const savedApiKey   = process.env.OPENAI_API_KEY;
+    const savedSimpleAIKey = process.env.SIMPLE_AI_KEY;
     const savedGeminiKey = process.env.GEMINI_API_KEY;
     const savedGeminiModel = process.env.GEMINI_MODEL;
 
@@ -313,6 +345,7 @@ export function runDoctorTests(): TestResult[] {
     // ── checkSimpleAIProvider: openai without API key returns WARNING ─────────
     process.env.SIMPLE_AI_PROVIDER = "openai";
     delete process.env.OPENAI_API_KEY;
+    delete process.env.SIMPLE_AI_KEY;
     const openaiNoKeyCheck = checkSimpleAIProvider();
     results.push(assert(openaiNoKeyCheck.status === "WARNING",
       "checkSimpleAIProvider: returns WARNING for openai without OPENAI_API_KEY"));
@@ -323,8 +356,17 @@ export function runDoctorTests(): TestResult[] {
     results.push(assert(openaiWithKeyCheck.status === "OK",
       "checkSimpleAIProvider: returns OK for openai with OPENAI_API_KEY set"));
 
+    delete process.env.OPENAI_API_KEY;
+    process.env.SIMPLE_AI_KEY = "unit-test-simple-ai-key";
+    const simpleKeyCheck = checkSimpleAIProvider();
+    results.push(assert(simpleKeyCheck.status === "OK" && simpleKeyCheck.detail.includes("API key: present"),
+      "checkSimpleAIProvider: accepts SIMPLE_AI_KEY without exposing it"));
+    results.push(assert(!simpleKeyCheck.detail.includes("unit-test-simple-ai-key"),
+      "checkSimpleAIProvider: never prints SIMPLE_AI_KEY value"));
+
     process.env.SIMPLE_AI_PROVIDER = "gemini";
     delete process.env.GEMINI_API_KEY;
+    delete process.env.SIMPLE_AI_KEY;
     const geminiNoKeyCheck = checkSimpleAIProvider();
     results.push(assert(geminiNoKeyCheck.status === "WARNING" && geminiNoKeyCheck.detail.includes("GEMINI_API_KEY"),
       "checkSimpleAIProvider: warns when Gemini key is absent"));
@@ -342,6 +384,8 @@ export function runDoctorTests(): TestResult[] {
 
     if (savedApiKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = savedApiKey;
+    if (savedSimpleAIKey === undefined) delete process.env.SIMPLE_AI_KEY;
+    else process.env.SIMPLE_AI_KEY = savedSimpleAIKey;
     if (savedGeminiKey === undefined) delete process.env.GEMINI_API_KEY;
     else process.env.GEMINI_API_KEY = savedGeminiKey;
     if (savedGeminiModel === undefined) delete process.env.GEMINI_MODEL;

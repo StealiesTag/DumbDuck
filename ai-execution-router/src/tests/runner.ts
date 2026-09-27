@@ -23,6 +23,7 @@ import {
 import {
   runConfigTests,
   runMcpConfigTests,
+  runAgentInstructionTests,
   runWorkspaceValidationTests,
   runDoctorTests,
   runProviderTests,
@@ -41,9 +42,13 @@ import {
 } from "./telemetry.test";
 import { runSuite } from "./helpers";
 import { runBenchmarkTests } from "./benchmark.test";
+import { PRODUCT_NAME } from "../branding";
+
+// Keep the test suite offline even when a project .env configures a real provider.
+process.env.SIMPLE_AI_PROVIDER = "mock";
 
 async function main(): Promise<void> {
-  console.log("\nAI Execution Router — Test Suite (v0.5)");
+  console.log(`\n${PRODUCT_NAME} — Test Suite (v0.5)`);
   console.log("=".repeat(54));
 
   let totalPassed = 0;
@@ -80,6 +85,7 @@ async function main(): Promise<void> {
   // ── v0.4 suites (new) ───────────────────────────────────────────────────────
   tally(runSuite("Config Load/Save",    runConfigTests()));
   tally(runSuite("MCP Config Gen",      runMcpConfigTests()));
+  tally(runSuite("Default Agent Instructions", runAgentInstructionTests()));
   tally(runSuite("Workspace Validation",runWorkspaceValidationTests()));
   tally(runSuite("Doctor Checks",       runDoctorTests()));
   tally(runSuite("Provider Handling",   runProviderTests()));

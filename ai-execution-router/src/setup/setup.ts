@@ -29,6 +29,8 @@ import {
   PROJECT_ROOT,
   CONFIG_PATH,
 } from "./config";
+import { installRouterAgentInstructions } from "./agentInstructions";
+import { PRODUCT_NAME } from "../branding";
 
 // ── readline helper ────────────────────────────────────────────────────────────
 
@@ -81,7 +83,7 @@ function bobMcpConfigPath(workspacePath: string): string {
 
 async function main(): Promise<void> {
   console.log("\n" + "=".repeat(58));
-  console.log("  AI Execution Router — Setup Wizard");
+  console.log(`  ${PRODUCT_NAME} — Setup Wizard`);
   console.log("=".repeat(58));
   console.log("This wizard configures the router for first use.");
   console.log("It will not overwrite unrelated settings without asking.\n");
@@ -185,19 +187,19 @@ async function main(): Promise<void> {
   // ── Step 5: Simple AI provider ──────────────────────────────────────────────
   console.log("\n── Step 5: Simple AI provider ────────────────────────────");
   console.log("  API keys are NOT stored in the config file.");
-  console.log("  1) mock  — no real API calls (default)");
+  console.log("  1) mock  — offline/testing only");
   console.log("  2) openai — requires OPENAI_API_KEY env variable");
-  console.log("  3) gemini — requires GEMINI_API_KEY env variable");
+  console.log("  3) gemini — requires GEMINI_API_KEY or SIMPLE_AI_KEY in .env or server environment (recommended)");
 
-  let simpleAiProvider = existingConfig.simpleAiProvider ?? "mock";
+  let simpleAiProvider = existingConfig.simpleAiProvider ?? "gemini";
   const aiInput = await ask(rl, "Choose [1/2/3] (press Enter to keep current: " + simpleAiProvider + "): ");
   if (aiInput === "2") {
     simpleAiProvider = "openai";
-    console.log("  → openai selected. Set OPENAI_API_KEY in your environment.");
+    console.log("  → openai selected. Set OPENAI_API_KEY or SIMPLE_AI_KEY in .env or the server environment.");
     console.log("    IMPORTANT: never paste API keys into this wizard.");
   } else if (aiInput === "3") {
     simpleAiProvider = "gemini";
-    console.log("  → Gemini selected. Set GEMINI_API_KEY in the MCP server environment.");
+    console.log("  → Gemini selected. Set GEMINI_API_KEY or SIMPLE_AI_KEY in .env or the server environment.");
     console.log("    IMPORTANT: never paste API keys into this wizard.");
   } else if (aiInput === "1" || aiInput === "") {
     if (aiInput === "1") simpleAiProvider = "mock";
@@ -214,8 +216,21 @@ async function main(): Promise<void> {
   });
   console.log(`  ✓ Saved to: ${CONFIG_PATH}`);
 
-  // ── Step 7: MCP config generation ──────────────────────────────────────────
-  console.log("\n── Step 7: MCP configuration ─────────────────────────────");
+  // ── Step 7: Agent instructions ────────────────────────────────────────────
+  console.log("\n── Step 7: Default agent routing ─────────────────────────");
+  const agentWorkspacePath = workspacePath ?? projectRoot;
+  console.log("  Install or update a managed AGENTS.md block so compatible agents");
+  console.log("  route workspace tasks through the router by default.");
+  const installInstructions = await askYN(rl, `Write instructions to ${path.join(agentWorkspacePath, "AGENTS.md")}?`, true);
+  if (installInstructions) {
+    const instructionsPath = installRouterAgentInstructions(agentWorkspacePath);
+    console.log(`  ✓ Agent guidance written to: ${instructionsPath}`);
+  } else {
+    console.log("  Agent guidance skipped. MCP tools remain opt-in in the host.");
+  }
+
+  // ── Step 8: MCP config generation ──────────────────────────────────────────
+  console.log("\n── Step 8: MCP configuration ─────────────────────────────");
 
   if (integrationTarget === "bob") {
     const wsForBob = workspacePath ?? projectRoot;
@@ -266,7 +281,7 @@ async function main(): Promise<void> {
     console.log("  Command: npx tsx <above path>");
   }
 
-  // ── Step 8: Next steps ──────────────────────────────────────────────────────
+  // ── Step 9: Next steps ──────────────────────────────────────────────────────
   console.log("\n" + "=".repeat(58));
   console.log("  Setup complete. Next steps:");
   console.log("=".repeat(58));
@@ -291,8 +306,8 @@ async function main(): Promise<void> {
     console.log("     Example (bash):       export OPENAI_API_KEY=sk-...");
   } else if (simpleAiProvider === "gemini") {
     console.log("");
-    console.log("  3. Set GEMINI_API_KEY in the environment inherited by your MCP host.");
-    console.log("     Set GEMINI_MODEL to override the default gemini-2.5-flash model.");
+    console.log("  3. Set GEMINI_API_KEY in the project .env file or the MCP server environment.");
+    console.log("     Set SIMPLE_AI_MODEL or GEMINI_MODEL to override the Gemini model.");
     console.log("     Never paste the key into this wizard or commit it to configuration.");
   }
 

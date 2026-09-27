@@ -19,6 +19,8 @@ export function runCapabilityMatcherTests(): TestResult[] {
     ["READ_FILE",   "readFile"],
     ["CALCULATION", "calculator"],
     ["RUN_TESTS",   "runTests"],
+    ["CREATE_FILE", "createFile"],
+    ["DELETE_FILE", "deleteFile"],
   ];
 
   for (const [kind, expectedTool] of deterministicCases) {
@@ -38,7 +40,7 @@ export function runCapabilityMatcherTests(): TestResult[] {
 
   // ── getDeterministicKinds ──────────────────────────────────────────────────
   const kinds = getDeterministicKinds();
-  results.push(assert(kinds.length === 4,              "getDeterministicKinds returns 4 entries"));
+  results.push(assert(kinds.length === 6,              "getDeterministicKinds returns 6 entries"));
   results.push(assert(kinds.includes("SEARCH"),        "getDeterministicKinds includes SEARCH"));
   results.push(assert(kinds.includes("CALCULATION"),   "getDeterministicKinds includes CALCULATION"));
 

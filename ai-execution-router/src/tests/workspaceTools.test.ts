@@ -11,6 +11,7 @@ import { listFiles }        from "../workspace/tools/listFiles";
 import { readWorkspaceFile } from "../workspace/tools/readFile";
 import { searchRepository } from "../workspace/tools/searchRepository";
 import { runWorkspaceTests } from "../workspace/tools/runTests";
+import { createWorkspaceFile, deleteWorkspaceFile } from "../workspace/tools/fileOperations";
 import { TestResult, assert, assertEqual } from "./helpers";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -82,6 +83,61 @@ export function runWorkspaceToolTests(): TestResult[] {
     // ── readWorkspaceFile: path traversal rejected ──────────────────────────
     const readTraversal = readWorkspaceFile(wm, "../../etc/passwd");
     results.push(assert(!readTraversal.ok, "readWorkspaceFile rejects path traversal"));
+
+    // ── File mutations: create without overwrite, delete with approval ────────
+    const created = createWorkspaceFile(wm, "created.txt", "5*8 = 40\n");
+    results.push(assert(created.ok, "createWorkspaceFile creates a workspace file"));
+    results.push(assertEqual(fs.readFileSync(path.join(tmpDir, "created.txt"), "utf-8"), "5*8 = 40\n",
+      "createWorkspaceFile writes exact content"));
+
+    const overwrite = createWorkspaceFile(wm, "created.txt", "replacement");
+    results.push(assert(!overwrite.ok, "createWorkspaceFile refuses to overwrite"));
+    results.push(assertEqual(fs.readFileSync(path.join(tmpDir, "created.txt"), "utf-8"), "5*8 = 40\n",
+      "refused overwrite leaves existing content unchanged"));
+
+    const traversalCreate = createWorkspaceFile(wm, "../outside-router-file.txt", "blocked");
+    results.push(assert(!traversalCreate.ok, "createWorkspaceFile rejects workspace traversal"));
+
+    const oversized = createWorkspaceFile(wm, "oversized.txt", "x".repeat(1024 * 1024 + 1));
+    results.push(assert(!oversized.ok, "createWorkspaceFile enforces the 1 MiB size limit"));
+
+    const outsideFile = path.join(path.dirname(tmpDir), `${path.basename(tmpDir)}-protected.txt`);
+    fs.writeFileSync(outsideFile, "protected");
+    const traversalDelete = deleteWorkspaceFile(wm, `../${path.basename(outsideFile)}`, true);
+    results.push(assert(!traversalDelete.ok && fs.existsSync(outsideFile),
+      "deleteWorkspaceFile rejects traversal and preserves outside files"));
+    fs.unlinkSync(outsideFile);
+
+    const outsideDir = makeTempDir();
+    const linkedDir = path.join(tmpDir, "outside-link");
+    let symlinkSupported = false;
+    try {
+      fs.symlinkSync(outsideDir, linkedDir, process.platform === "win32" ? "junction" : "dir");
+      symlinkSupported = true;
+    } catch {}
+    if (symlinkSupported) {
+      const symlinkWrite = createWorkspaceFile(wm, "outside-link/escaped.txt", "blocked");
+      results.push(assert(!symlinkWrite.ok && !fs.existsSync(path.join(outsideDir, "escaped.txt")),
+        "createWorkspaceFile rejects symlinked parents"));
+    } else {
+      results.push(assert(true, "symlink mutation test skipped because links are unavailable"));
+    }
+    rmTempDir(outsideDir);
+
+    const unapprovedDelete = deleteWorkspaceFile(wm, "created.txt", false);
+    results.push(assert(!unapprovedDelete.ok && unapprovedDelete.needsApproval === true,
+      "deleteWorkspaceFile requires confirmation"));
+    results.push(assert(fs.existsSync(path.join(tmpDir, "created.txt")),
+      "unapproved delete preserves the file"));
+
+    const deleted = deleteWorkspaceFile(wm, "created.txt", true);
+    results.push(assert(deleted.ok, "deleteWorkspaceFile deletes a confirmed regular file"));
+    results.push(assert(!fs.existsSync(path.join(tmpDir, "created.txt")),
+      "confirmed delete removes the file"));
+
+    const deleteDirectory = deleteWorkspaceFile(wm, "sub", true);
+    results.push(assert(!deleteDirectory.ok && fs.existsSync(path.join(tmpDir, "sub")),
+      "deleteWorkspaceFile refuses to delete directories"));
 
     // ── searchRepository: finds matches ────────────────────────────────────
     const searchResult = searchRepository(wm, "TODO");

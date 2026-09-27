@@ -10,15 +10,19 @@ import { routeTaskLegacy, printSummary }   from "./router/router";
 import { getModelStatus }                  from "./router/classifier";
 import { executionLog }                    from "./log/executionLog";
 import { ExecutionResult, IncomingTask }   from "./types";
+import { DUCK_MASCOT, PRODUCT_NAME, PRODUCT_TAGLINE } from "./branding";
+import { getSimpleAIProviderStatus } from "./executors/simpleAI";
 
 async function main(): Promise<void> {
   console.log("=".repeat(54));
-  console.log("AI EXECUTION ROUTER — v0.3.0");
+  console.log(DUCK_MASCOT);
+  console.log(`${PRODUCT_NAME} — ${PRODUCT_TAGLINE}`);
   console.log("=".repeat(54));
 
   const modelStatus = getModelStatus();
+  const providerStatus = getSimpleAIProviderStatus();
   console.log(`Classifier: ${modelStatus}`);
-  console.log(`Simple AI:  provider=${process.env.SIMPLE_AI_PROVIDER ?? "mock"}`);
+  console.log(`Simple AI:  provider=${providerStatus.provider}, model=${providerStatus.model}`);
   console.log("=".repeat(54));
   console.log("Mock agent producing 7 tasks...\n");
 

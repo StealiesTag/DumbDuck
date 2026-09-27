@@ -587,8 +587,8 @@ export function runMCPProtocolSafetyTests(): TestResult[] {
 
   // Stderr content must contain expected fields, not raw JSON-RPC
   const stderrContent = stderrWrites.join("");
-  results.push(assert(stderrContent.includes("AI Execution Router"),
-    "mcp-safety: stderr contains [AI Execution Router] header"));
+  results.push(assert(stderrContent.includes("DumbDuck"),
+    "mcp-safety: stderr contains [DumbDuck] header"));
   results.push(assert(stderrContent.includes("read_file"),
     "mcp-safety: stderr contains tool name"));
   results.push(assert(stderrContent.includes("completed") || stderrContent.includes("SUCCEEDED"),

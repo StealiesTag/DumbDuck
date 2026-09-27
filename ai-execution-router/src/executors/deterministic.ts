@@ -16,6 +16,7 @@ import { readWorkspaceFile }   from "../workspace/tools/readFile";
 import { searchRepository }    from "../workspace/tools/searchRepository";
 import { getGitStatus, getGitDiff } from "../workspace/tools/gitOps";
 import { runWorkspaceTests }   from "../workspace/tools/runTests";
+import { createWorkspaceFile, deleteWorkspaceFile } from "../workspace/tools/fileOperations";
 
 // Legacy tools (still used when no workspace is set)
 import { calculate }           from "../tools/calculator";
@@ -26,7 +27,7 @@ export interface DeterministicResult extends ExecutionResult {
 
 export function runDeterministic(task: IncomingTask): DeterministicResult {
   const start = Date.now();
-  let output: string;
+  let output = "";
   let status: TaskStatus = "SUCCEEDED";
 
   // Build a per-task workspace manager if a root is supplied
@@ -117,6 +118,33 @@ export function runDeterministic(task: IncomingTask): DeterministicResult {
         output = result.error
           ? `Calculation error: ${result.error}`
           : `${result.expression} = ${result.result}`;
+        break;
+      }
+
+      case "CREATE_FILE": {
+        const filePath = String(task.args.path ?? "");
+        const content = task.args.content;
+        const res = typeof content === "string"
+          ? createWorkspaceFile(wsm, filePath, content)
+          : { ok: false, error: "taskArgs.content must be a string." };
+        if (!res.ok) {
+          output = `Create error: ${res.error}`;
+          status = "FAILED";
+        } else {
+          output = `Created "${res.path}" (${res.sizeBytes} bytes).`;
+        }
+        break;
+      }
+
+      case "DELETE_FILE": {
+        const filePath = String(task.args.path ?? "");
+        const res = deleteWorkspaceFile(wsm, filePath, task.args.confirm === true);
+        if (!res.ok) {
+          output = `Delete error: ${res.error}`;
+          status = res.needsApproval ? "NEEDS_APPROVAL" : "FAILED";
+        } else {
+          output = `Deleted "${res.path}".`;
+        }
         break;
       }
 

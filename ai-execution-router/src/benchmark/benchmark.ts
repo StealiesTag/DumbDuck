@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { UsageData, UsageMeasurementType } from "../types";
+import { PRODUCT_NAME } from "../branding";
 import { WorkspaceManager } from "../workspace/WorkspaceManager";
 import { listFiles } from "../workspace/tools/listFiles";
 import { readWorkspaceFile } from "../workspace/tools/readFile";
@@ -302,7 +303,7 @@ export function persistBenchmarkRun(run: BenchmarkRun, reportPath = getBenchmark
     fs.appendFileSync(reportPath, `${JSON.stringify(run)}\n`, "utf8");
     return true;
   } catch (error) {
-    process.stderr.write(`[AI Execution Router benchmark] Could not persist report: ${sanitizeError(error, reportPath)}\n`);
+    process.stderr.write(`[${PRODUCT_NAME} benchmark] Could not persist report: ${sanitizeError(error, reportPath)}\n`);
     return false;
   }
 }

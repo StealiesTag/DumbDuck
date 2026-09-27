@@ -19,6 +19,8 @@ const DETERMINISTIC_CAPABILITIES: Partial<Record<TaskKind, string>> = {
   READ_FILE:   "readFile",
   CALCULATION: "calculator",
   RUN_TESTS:   "runTests",
+  CREATE_FILE: "createFile",
+  DELETE_FILE: "deleteFile",
 };
 
 /**

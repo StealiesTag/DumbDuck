@@ -1,9 +1,19 @@
-# AI Execution Router
+# DumbDuck
 
-An agent-agnostic execution routing system that classifies individual agent tasks
-and routes them to the cheapest execution method capable of handling them —
-deterministic local tools, a lightweight AI model, or delegation back to the
-originating agent.
+**AI that knows when not to use AI.**
+
+```text
+  __
+<(o )___
+ ( ._> /
+  `---'
+```
+
+The mascot is a dumb duck. That's the whole mascot.
+
+DumbDuck is an agent-agnostic task router. It combines deterministic capability
+matching with a machine-learning classifier to route work to a local tool, a
+lightweight AI provider, or back to the originating agent.
 
 > Bob is used as the first integration target, but the core router is
 > independent of any specific agent.
@@ -79,12 +89,30 @@ cheapest execution path capable of completing it:
 | Tier | Label             | Handled by                              |
 | ---- | ----------------- | --------------------------------------- |
 | 0    | `DETERMINISTIC` | Local tool — no AI model involved      |
-| 1    | `SIMPLE_AI`     | Lightweight model (mock by default)     |
+| 1    | `SIMPLE_AI`     | Configured lightweight provider (Gemini by default) |
 | 2    | `COMPLEX_AI`    | Delegated back to the originating agent |
 
 Why task-level routing matters: routing an entire conversation to `COMPLEX_AI`
 wastes tokens on trivial steps. Routing it to `SIMPLE_AI` may fail on hard steps.
 Per-task routing uses the right resource for each piece of work.
+
+### Routing and token use
+
+DumbDuck first checks whether a supported local tool can handle the task. If not,
+its ML decision tree uses task features to classify the task as `SIMPLE_AI` or
+`COMPLEX_AI`. Together, these stages produce the three routes above; the ML tree
+does not classify deterministic capabilities.
+
+When a task is handled entirely by a deterministic tool, DumbDuck makes no LLM
+call for that task: **0 model tokens are used by the router to execute it**.
+Compared with asking a model to perform that same operation, that can avoid
+100% of the task-execution model tokens. This is not a claim of 100% end-to-end
+conversation savings: agent planning, MCP/tool messages, or follow-up reasoning
+may still use host-model tokens, which the router cannot measure.
+
+`SIMPLE_AI` still consumes input and output tokens, even when the provider's free
+tier makes the API charge $0. Free-of-charge does not mean token-free. Complex
+tasks are delegated to the host agent and may consume host-model tokens.
 
 ---
 
@@ -106,7 +134,7 @@ src/
 │
 ├── executors/
 │   ├── deterministic.ts       Real workspace tools (search, read, git, tests)
-│   ├── simpleAI.ts            Provider abstraction (mock by default, OpenAI ready)
+│   ├── simpleAI.ts            Provider abstraction (Gemini by default; mock is explicit)
 │   └── complexAI.ts           Structured delegation payload — no local model call
 │
 ├── workspace/
@@ -114,6 +142,7 @@ src/
 │   └── tools/
 │       ├── listFiles.ts       Recursive directory listing (capped)
 │       ├── readFile.ts        Text file reading (size-limited, extension-checked)
+│       ├── fileOperations.ts  Workspace-scoped create/delete with safety checks
 │       ├── searchRepository.ts Pattern search across workspace files
 │       ├── gitOps.ts          git status and git diff (read-only)
 │       └── runTests.ts        Pre-approved test command execution
@@ -217,9 +246,16 @@ The interactive wizard asks for:
 1. Your workspace directory (the project you want to route tasks for)
 2. Your integration target (`bob`, `generic`, or `manual`)
 3. Your Simple AI provider (`mock`, `openai`, or `gemini`)
+4. Whether to install default-routing guidance in the workspace's `AGENTS.md` (default: yes)
 
 It writes `router.config.json` in the project root and prints the MCP
-configuration block to paste into your Bob config file.
+configuration block to paste into your Bob config file. The managed `AGENTS.md`
+section tells compatible agents to call `route_task` before workspace operations;
+existing file content is preserved when setup updates that section.
+
+This is persistent guidance, not hard enforcement. MCP servers cannot intercept
+an agent host's native tools, and hosts that ignore `AGENTS.md` need their own
+system instructions or lifecycle hooks configured.
 
 **This file is machine-local.** Add it to `.gitignore`:
 
@@ -237,7 +273,7 @@ Prints the status of every component:
 
 ```
 ==========================================================
-  AI Execution Router — System Health Check
+  DumbDuck — System Health Check
 ==========================================================
   ✓ Node.js version ................ v24.x.x
   ✓ Dependencies ................... node_modules present
@@ -247,7 +283,7 @@ Prints the status of every component:
   ✓ Default workspace .............. /my/project
   ℹ Simple AI provider ............. mock mode — no real AI calls will be made
   ✓ Execution mode ................. ML classifier: ML_MODEL | simple AI: MOCK | ...
-  ℹ Agent hook / enforcement ....... Bob integration target set. MCP tools available.
+  ℹ Agent hook / enforcement ....... Default-routing guidance found in .../AGENTS.md
   ✓ MCP server startup ............. Server started, 11 tools registered
 ==========================================================
 ```
@@ -311,7 +347,7 @@ Add this to your Bob MCP configuration file.
 }
 ```
 
-**With a real OpenAI provider:**
+**With the Gemini provider:**
 
 ```json
 {
@@ -320,9 +356,9 @@ Add this to your Bob MCP configuration file.
       "command": "npx",
       "args": ["tsx", "C:/Users/ADMIN/Desktop/DumbDuck/ai-execution-router/src/mcp/server.ts"],
       "env": {
-        "SIMPLE_AI_PROVIDER": "openai",
-        "OPENAI_API_KEY": "${env:OPENAI_API_KEY}",
-        "SIMPLE_AI_MODEL": "gpt-4o-mini"
+        "SIMPLE_AI_PROVIDER": "gemini",
+        "GEMINI_API_KEY": "${env:GEMINI_API_KEY}",
+        "SIMPLE_AI_MODEL": "gemini-2.5-flash-lite"
       }
     }
   }
@@ -394,7 +430,7 @@ To switch workspaces, call `set_workspace` again.
 | `get_git_status`       | Git status of the workspace repository.                                                                                  |
 | `get_git_diff`         | Git diff (read-only).                                                                                                    |
 | `run_tests`            | Run a pre-approved test suite. Arbitrary commands are rejected.                                                          |
-| `route_task`           | Route a task through the full ML + execution pipeline.                                                                   |
+| `route_task`           | Default entry point; includes deterministic `CREATE_FILE` and `DELETE_FILE` task kinds.                                  |
 | `get_execution_report` | JSON summary of all tasks routed in this session.                                                                        |
 
 ---
@@ -404,6 +440,8 @@ To switch workspaces, call `set_workspace` again.
 ### What is enforced
 
 - All file paths are resolved against the workspace root and traversal is rejected.
+- `CREATE_FILE` creates new UTF-8 files up to 1 MiB, never overwrites, and rejects symlinked paths.
+- `DELETE_FILE` only unlinks regular files under the workspace and requires `taskArgs.confirm=true`; this is caller-declared approval, not a host-enforced approval UI.
 - `run_tests` only executes pre-approved commands (`npm-test`, `jest`, `vitest`, `pytest`, `npm-test-ci`). Arbitrary shell strings are never executed.
 - `get_git_status` and `get_git_diff` are read-only operations. No modifications are made.
 - API keys are read from environment variables only — never hardcoded.
@@ -458,39 +496,43 @@ If you are integrating with Bob:
 
 ## 13. Configuring the simple AI model
 
-The SIMPLE_AI executor selects its provider from the MCP server process
-environment:
+The SIMPLE_AI executor selects its provider from `SIMPLE_AI_PROVIDER`, then
+`router.config.json`; Gemini is the default. The server loads the router
+project-root `.env` file without printing its values. Start from `.env.example`
+and keep the real `.env` local and ignored.
 
 | Variable                 | Default         | Description                   |
 | ------------------------ | --------------- | ----------------------------- |
-| `SIMPLE_AI_PROVIDER`   | `mock`        | `mock`, `openai`, or `gemini` |
-| `OPENAI_API_KEY`       | —              | Required when provider=openai |
-| `GEMINI_API_KEY`       | —              | Required when provider=gemini |
-| `SIMPLE_AI_MODEL`      | `gpt-4o-mini` | OpenAI model identifier       |
-| `GEMINI_MODEL`         | `gemini-2.5-flash` | Gemini model identifier  |
+| `SIMPLE_AI_PROVIDER`   | `gemini`      | `mock`, `openai`, or `gemini` |
+| `OPENAI_API_KEY`       | —              | Required when provider=openai; `SIMPLE_AI_KEY` is also accepted |
+| `GEMINI_API_KEY`       | —              | Required when provider=gemini; `SIMPLE_AI_KEY` is also accepted |
+| `SIMPLE_AI_MODEL`      | `gemini-2.5-flash` | Default model identifier |
+| `GEMINI_MODEL`         | —              | Optional Gemini model override |
 | `SIMPLE_AI_TIMEOUT_MS` | `30000`       | Request timeout in ms         |
 
 Gemini uses Google's official [`@google/genai`](https://www.npmjs.com/package/@google/genai)
-SDK. The default Gemini model is `gemini-2.5-flash`; set `GEMINI_MODEL` to a
-model available to your Gemini API project. OpenAI remains available through
-the existing `openai` SDK path and `SIMPLE_AI_MODEL` setting.
+SDK. The default Gemini model is `gemini-2.5-flash`; `.env.example` selects
+`gemini-2.5-flash-lite`. Set `GEMINI_MODEL` or `SIMPLE_AI_MODEL` to a model
+available to your Gemini API project. OpenAI remains available through the
+existing `openai` SDK path.
 
-The router does not load `.env` files. Set variables in the environment that
-starts VS Code/MCP, or use your MCP host's supported per-server environment
-configuration. For a PowerShell-launched VS Code session, set them before
-launching the host:
+The router loads `.env` from its project root, regardless of the MCP host's
+working directory. Copy `.env.example` to `.env` and set a valid provider key
+there. `.env` is ignored by Git; the key is never printed or written to
+`router.config.json`. You can alternatively set variables before launching
+VS Code/MCP:
 
 ```powershell
 $env:SIMPLE_AI_PROVIDER = "gemini"
 $env:GEMINI_API_KEY = "set-this-locally"
-$env:GEMINI_MODEL = "gemini-2.5-flash"
+$env:SIMPLE_AI_MODEL = "gemini-2.5-flash-lite"
 code .
 ```
 
 Use a locally protected environment or secret manager for the key; do not put
 it in source files, committed configuration, or chat. Existing MCP config
-generators produce the non-secret placeholder `${env:GEMINI_API_KEY}`. Restart
-the MCP server after changing its environment. `npm run doctor` reports the
+generators produce non-secret environment placeholders for provider keys.
+Restart the MCP server after changing its environment. `npm run doctor` reports the
 selected provider/model and whether its key is present, but never prints the
 key value.
 
@@ -500,19 +542,18 @@ usage only when all three are present and valid. Missing or incomplete metadata
 stays unavailable; no zero or estimate is substituted. The provider/model
 identity is included with execution records and MCP responses. Authentication,
 quota/rate-limit, and network failures are returned as safe categorized errors;
-raw SDK error messages are not exposed. This integration has been tested with
-mocked SDK responses only; configuration/status checks do not verify live
-connectivity or API-key validity.
+raw SDK error messages are not exposed. Automated tests use mocked provider
+responses; configuration/status checks do not verify live connectivity or
+API-key validity, and tests never make live provider calls.
 
-To perform one small live check manually after configuring your own key, restart
-the MCP server and submit a short `SUMMARIZE` task with `SIMPLE_AI_PROVIDER=gemini`.
-That request is a real Gemini API call and may consume quota. Confirm the result
-reports `providerId: "gemini"`, the chosen `modelId`, and `tokenUsage` when the
-API returns usage metadata. This repository's automated tests never make that
-request.
+To verify a provider manually, configure its key, restart the MCP server, and
+submit a short `SUMMARIZE` task. This makes a real API request and may consume
+quota. Confirm the result reports the expected `providerId` and `modelId`, plus
+`tokenUsage` when the provider returns usage metadata.
 
-In mock mode, responses are clearly labelled `[MOCK — no AI call made]`.
-No tokens are consumed and no API key is required.
+Mock mode remains available only when explicitly selected for offline tests.
+Missing or invalid credentials for a real provider fail visibly rather than
+silently switching to mock.
 
 To add a new provider, implement the `SimpleAIProvider` interface in
 [`src/executors/simpleAI.ts`](src/executors/simpleAI.ts) and add it to the
@@ -758,8 +799,10 @@ and `training/train.py`. **Column order must not change without retraining.**
 - The MCP server holds a single workspace per process. Multiple clients share it.
 - `runTests` requires the workspace to be set; the mock fallback is used otherwise.
 - The `openai` provider requires `npm install openai` separately (not bundled).
-- Bob hooks are not yet configured — the router does not intercept Bob's own
-  built-in tools. Integration is opt-in via MCP tool calls.
+- Setup can install persistent `AGENTS.md` guidance that asks compatible agents
+  to route workspace operations by default. It is advisory: the router cannot
+  intercept native tools, and hosts that ignore `AGENTS.md` need host-level
+  instructions or lifecycle hooks.
 - No persistence across restarts except via `EXECUTION_LOG_PATH`.
 - The dataset is 31 rows. The model should not be used as a production classifier.
 
@@ -767,8 +810,9 @@ and `training/train.py`. **Column order must not change without retraining.**
 
 1. **Grow the dataset** — label real routing decisions from actual agent sessions.
 2. **Measure outcomes** — record whether delegated/routed tasks succeeded.
-3. **Connect Bob hooks** — configure Bob lifecycle hooks to prefer router tools.
-4. **Wire a real provider** — set `SIMPLE_AI_PROVIDER=openai` and `OPENAI_API_KEY`.
+3. **Connect host hooks** — configure agent lifecycle hooks where strict routing
+  enforcement is required; `AGENTS.md` guidance alone is not enforcement.
+4. **Wire a real provider** — set `SIMPLE_AI_PROVIDER=gemini` and `GEMINI_API_KEY`.
 5. **Add write tools** — once read-only tools are validated, add workspace writes
    with explicit user approval.
 6. **Add token cost tracking** — implement once real provider data is available.

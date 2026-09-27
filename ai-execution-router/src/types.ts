@@ -15,6 +15,8 @@ export type TaskKind =
   | "READ_FILE"     // reading a file from disk
   | "CALCULATION"   // arithmetic or formula evaluation
   | "RUN_TESTS"     // executing a test suite
+  | "CREATE_FILE"   // create a new workspace file without overwriting
+  | "DELETE_FILE"   // delete a workspace file after explicit confirmation
   | "SUMMARIZE"     // condensing or explaining existing text
   | "DIAGNOSE"      // reasoning about a bug or failure
   | "DESIGN"        // proposing architecture / refactoring plans

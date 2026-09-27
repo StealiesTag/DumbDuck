@@ -113,7 +113,7 @@ export interface McpConfigEntry {
  */
 export function generateBobMcpEntry(
   projectRoot:        string,
-  simpleAiProvider:   string = "mock"
+  simpleAiProvider:   string = "gemini"
 ): Record<string, McpConfigEntry> {
   const serverPath = path.join(projectRoot, "src", "mcp", "server.ts")
     .replace(/\\/g, "/");  // forward slashes for JSON portability
@@ -141,7 +141,7 @@ export function generateBobMcpEntry(
 export function mergeBobMcpJson(
   existingContent:  string | null,
   projectRoot:      string,
-  simpleAiProvider: string = "mock"
+  simpleAiProvider: string = "gemini"
 ): { json: string; conflict: boolean; existingEntry: McpConfigEntry | null } {
   const newEntry = generateBobMcpEntry(projectRoot, simpleAiProvider);
 

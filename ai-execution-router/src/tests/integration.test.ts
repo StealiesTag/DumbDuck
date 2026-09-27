@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { runComplexAI }   from "../executors/complexAI";
-import { createGeminiProvider, describeProviderError, getSimpleAIProviderStatus, runSimpleAI } from "../executors/simpleAI";
+import { createGeminiProvider, describeProviderError, getSafeProviderErrorDiagnostic, getSimpleAIProviderStatus, runSimpleAI } from "../executors/simpleAI";
 import { executionLog }   from "../log/executionLog";
 import { routeTask }      from "../router/router";
 import { clearModelCache } from "../router/classifier";
@@ -58,9 +58,9 @@ export async function runDelegationTests(): Promise<TestResult[]> {
   results.push(assert(parsed !== null, "delegation output is valid JSON"));
 
   // ── SimpleAI mock mode ────────────────────────────────────────────────────
-  // Ensure SIMPLE_AI_PROVIDER is not set to openai for this test
+  // Select mock explicitly so project configuration cannot trigger a live call.
   const origProvider = process.env.SIMPLE_AI_PROVIDER;
-  delete process.env.SIMPLE_AI_PROVIDER;
+  process.env.SIMPLE_AI_PROVIDER = "mock";
 
   const simpleTask = makeTask({ id: "simple-001", kind: "SUMMARIZE",
     description: "Summarize the error" });
@@ -79,10 +79,13 @@ export async function runDelegationTests(): Promise<TestResult[]> {
   ));
 
   // Restore env
-  if (origProvider !== undefined) process.env.SIMPLE_AI_PROVIDER = origProvider;
+  if (origProvider === undefined) delete process.env.SIMPLE_AI_PROVIDER;
+  else process.env.SIMPLE_AI_PROVIDER = origProvider;
 
   // ── Missing credentials error ─────────────────────────────────────────────
   process.env.SIMPLE_AI_PROVIDER = "openai";
+  const origSimpleAIKey = process.env.SIMPLE_AI_KEY;
+  delete process.env.SIMPLE_AI_KEY;
   delete process.env.OPENAI_API_KEY;
 
   const credTask = makeTask({ id: "cred-001", kind: "SUMMARIZE",
@@ -91,11 +94,14 @@ export async function runDelegationTests(): Promise<TestResult[]> {
 
   results.push(assertEqual(credResult.status, "FAILED", "missing API key → FAILED"));
   results.push(assert(
-    credResult.output.includes("[Simple AI error]"),
+    credResult.output.includes("[Simple AI error]") && credResult.output.includes("SIMPLE_AI_KEY"),
     "missing API key output is labelled as error"
   ));
 
-  delete process.env.SIMPLE_AI_PROVIDER;
+  if (origSimpleAIKey === undefined) delete process.env.SIMPLE_AI_KEY;
+  else process.env.SIMPLE_AI_KEY = origSimpleAIKey;
+  if (origProvider === undefined) delete process.env.SIMPLE_AI_PROVIDER;
+  else process.env.SIMPLE_AI_PROVIDER = origProvider;
 
   return results;
 }
@@ -103,7 +109,9 @@ export async function runDelegationTests(): Promise<TestResult[]> {
 export async function runGeminiProviderTests(): Promise<TestResult[]> {
   const results: TestResult[] = [];
   const previousKey = process.env.GEMINI_API_KEY;
+  const previousSimpleAIKey = process.env.SIMPLE_AI_KEY;
   const previousProvider = process.env.SIMPLE_AI_PROVIDER;
+  const previousSimpleModel = process.env.SIMPLE_AI_MODEL;
   const previousModel = process.env.GEMINI_MODEL;
   process.env.GEMINI_API_KEY = "unit-test-key-not-a-credential";
   process.env.SIMPLE_AI_PROVIDER = "gemini";
@@ -132,6 +140,12 @@ export async function runGeminiProviderTests(): Promise<TestResult[]> {
     results.push(assertEqual(observedTimeout, 1234, "Gemini request receives configured timeout"));
     results.push(assert(!response.isMock, "Gemini provider result is not marked mock"));
 
+    delete process.env.GEMINI_MODEL;
+    process.env.SIMPLE_AI_MODEL = "gemini-simple-model-test";
+    results.push(assertEqual(getSimpleAIProviderStatus().model, "gemini-simple-model-test",
+      "Gemini provider accepts SIMPLE_AI_MODEL"));
+    process.env.GEMINI_MODEL = "gemini-test-model";
+
     const noUsageProvider = createGeminiProvider(() => ({
       models: { generateContent: async () => ({ text: "No metadata" }) },
     } as never));
@@ -153,20 +167,92 @@ export async function runGeminiProviderTests(): Promise<TestResult[]> {
     results.push(assert(malformedError.includes("no text content"), "malformed response without text is rejected safely"));
 
     delete process.env.GEMINI_API_KEY;
+    delete process.env.SIMPLE_AI_KEY;
     const missingKeyResult = await runSimpleAI(makeTask({ id: "gemini-no-key", kind: "SUMMARIZE" }));
     results.push(assertEqual(missingKeyResult.status, "FAILED", "Gemini without a key fails without making a request"));
     results.push(assert(missingKeyResult.output.includes("GEMINI_API_KEY") && !missingKeyResult.output.includes("unit-test-key"),
       "missing-key failure names the variable without exposing credentials"));
     process.env.GEMINI_API_KEY = "unit-test-key-not-a-credential";
 
-    const authMessage = describeProviderError({ status: 401, message: "bad key unit-test-key-not-a-credential" }, "Gemini");
-    const invalidKeyMessage = describeProviderError({ code: "API_KEY_INVALID", message: "credential details" }, "Gemini");
-    const quotaMessage = describeProviderError({ status: "RESOURCE_EXHAUSTED", message: "quota detail" }, "Gemini");
-    const networkMessage = describeProviderError({ code: "ECONNRESET", message: "socket detail" }, "Gemini");
-    results.push(assert(authMessage.includes("authentication") && !authMessage.includes("unit-test-key"), "authentication errors are categorized without raw details"));
-    results.push(assert(invalidKeyMessage.includes("authentication") && !invalidKeyMessage.includes("credential details"), "invalid Gemini key errors are categorized safely"));
-    results.push(assert(quotaMessage.includes("quota or rate limit"), "quota errors are categorized safely"));
-    results.push(assert(networkMessage.includes("network request"), "network errors are categorized safely"));
+    const authDiagnostic = getSafeProviderErrorDiagnostic({
+      status: 401,
+      code: "UNAUTHENTICATED",
+      message: "Authorization: Bearer fake-auth-secret",
+    });
+    results.push(assertEqual(authDiagnostic.category, "authentication", "401 is categorized as authentication"));
+    results.push(assertEqual(authDiagnostic.httpStatus, 401, "authentication diagnostic preserves HTTP status"));
+    results.push(assert(!JSON.stringify(authDiagnostic).includes("fake-auth-secret"), "authentication diagnostic redacts authorization values"));
+
+    const invalidKeyDiagnostic = getSafeProviderErrorDiagnostic({
+      status: 400,
+      error: { code: "API_KEY_INVALID", message: "The API key is not valid." },
+    });
+    results.push(assertEqual(invalidKeyDiagnostic.category, "authentication", "invalid API key code is categorized as authentication"));
+    results.push(assertEqual(invalidKeyDiagnostic.providerCode, "API_KEY_INVALID", "nested provider code is extracted"));
+
+    const quotaDiagnostic = getSafeProviderErrorDiagnostic({
+      status: 429,
+      code: "RESOURCE_EXHAUSTED",
+      message: "Quota exceeded",
+    });
+    results.push(assertEqual(quotaDiagnostic.category, "quota/rate limit", "429 quota error is categorized"));
+    results.push(assertEqual(quotaDiagnostic.httpStatus, 429, "quota diagnostic preserves HTTP status"));
+
+    const modelDiagnostic = getSafeProviderErrorDiagnostic({
+      status: 404,
+      code: "NOT_FOUND",
+      message: "Model gemini-test-model was not found.",
+    });
+    results.push(assertEqual(modelDiagnostic.category, "model/access", "404 model error is categorized"));
+    results.push(assertEqual(modelDiagnostic.providerCode, "NOT_FOUND", "model diagnostic preserves provider code"));
+
+    const accessDiagnostic = getSafeProviderErrorDiagnostic({
+      status: 403,
+      code: "PERMISSION_DENIED",
+      message: "The requested model is not available to this project.",
+    });
+    results.push(assertEqual(accessDiagnostic.category, "model/access", "model permission errors are not guessed to be authentication"));
+
+    const networkDiagnostic = getSafeProviderErrorDiagnostic({
+      cause: Object.assign(new Error("Request timed out"), { code: "ETIMEDOUT" }),
+    });
+    results.push(assertEqual(networkDiagnostic.category, "network/timeout", "nested timeout is categorized as network"));
+    results.push(assertEqual(networkDiagnostic.providerCode, "ETIMEDOUT", "nested network code is extracted"));
+    results.push(assertEqual(getSafeProviderErrorDiagnostic({ status: 503, message: "Service unavailable" }).category,
+      "network/timeout", "503 service unavailable is categorized as transient network failure"));
+
+    const wrappedCause = new Error("Gemini SDK could not be loaded.", {
+      cause: Object.assign(new Error("underlying API key invalid"), { status: 403, code: "API_KEY_INVALID" }),
+    });
+    const causeDiagnostic = getSafeProviderErrorDiagnostic(wrappedCause);
+    results.push(assertEqual(causeDiagnostic.category, "authentication", "wrapped SDK cause remains diagnostically available"));
+    results.push(assertEqual(causeDiagnostic.httpStatus, 403, "wrapped cause preserves HTTP status"));
+
+    const redactedMessage = describeProviderError({
+      status: 400,
+      message: "x-goog-api-key: fake-header-secret; request URL https://example.test/generate?key=fake-query-secret; contents: private prompt",
+    }, "Gemini");
+    results.push(assert(redactedMessage.includes("httpStatus=400"), "formatted error includes safe HTTP status"));
+    results.push(assert(redactedMessage.includes("category=unknown"), "unrecognized 400 remains unknown without a known signal"));
+    results.push(assert(!/fake-header-secret|fake-query-secret|private prompt|https?:\/\//i.test(redactedMessage),
+      "formatted error redacts headers, credential URLs, and request contents"));
+    results.push(assert(!describeProviderError({ message: "Bearer standalone-secret" }, "Gemini").includes("standalone-secret"),
+      "formatted error redacts standalone bearer tokens"));
+
+    const unknownDiagnostic = getSafeProviderErrorDiagnostic({});
+    results.push(assertEqual(unknownDiagnostic.category, "unknown", "empty provider error is honestly categorized unknown"));
+    results.push(assertEqual(unknownDiagnostic.message, undefined, "empty provider error does not invent a message"));
+    results.push(assert(describeProviderError({}, "Gemini").includes("No safe provider details available."),
+      "unknown user-facing diagnostic says details are unavailable"));
+
+    const sourceError = Object.assign(new Error("Model gemini-test-model not found."), { status: 404, code: "NOT_FOUND" });
+    const rejectingProvider = createGeminiProvider(() => ({
+      models: { generateContent: async () => { throw sourceError; } },
+    } as never));
+    let observedProviderError: unknown;
+    try { await rejectingProvider.call("prompt", "gemini-test-model", 1000); }
+    catch (error) { observedProviderError = error; }
+    results.push(assert(observedProviderError === sourceError, "Gemini adapter preserves the original provider error internally"));
     const status = getSimpleAIProviderStatus();
     results.push(assertEqual(status.provider, "gemini", "provider status reports Gemini"));
     results.push(assertEqual(status.model, "gemini-test-model", "provider status reports configured model"));
@@ -175,8 +261,12 @@ export async function runGeminiProviderTests(): Promise<TestResult[]> {
   } finally {
     if (previousKey === undefined) delete process.env.GEMINI_API_KEY;
     else process.env.GEMINI_API_KEY = previousKey;
+    if (previousSimpleAIKey === undefined) delete process.env.SIMPLE_AI_KEY;
+    else process.env.SIMPLE_AI_KEY = previousSimpleAIKey;
     if (previousProvider === undefined) delete process.env.SIMPLE_AI_PROVIDER;
     else process.env.SIMPLE_AI_PROVIDER = previousProvider;
+    if (previousSimpleModel === undefined) delete process.env.SIMPLE_AI_MODEL;
+    else process.env.SIMPLE_AI_MODEL = previousSimpleModel;
     if (previousModel === undefined) delete process.env.GEMINI_MODEL;
     else process.env.GEMINI_MODEL = previousModel;
   }

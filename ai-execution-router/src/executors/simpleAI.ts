@@ -5,24 +5,23 @@
 //
 // Provider abstraction
 // ────────────────────
-// The provider is selected by the SIMPLE_AI_PROVIDER env var:
+// The provider is selected by SIMPLE_AI_PROVIDER, then router.config.json:
 //   "openai"    — uses the OpenAI chat completions API
 //   "gemini"    — uses Google's Gemini API through @google/genai
-//   "mock"      — returns a clearly labelled stub (default when no key is set)
+//   "mock"      — returns a clearly labelled stub when explicitly selected
 //
 // Configuration via environment variables (never hardcoded):
-//   SIMPLE_AI_PROVIDER   — "openai" | "gemini" | "mock" (default: "mock")
-//   OPENAI_API_KEY       — required when provider = "openai"
+//   SIMPLE_AI_PROVIDER   — "openai" | "gemini" | "mock" (default: configured provider or "gemini")
+//   OPENAI_API_KEY       — required when provider = "openai" (SIMPLE_AI_KEY is also accepted)
 //   GEMINI_API_KEY       — required when provider = "gemini"
-//   SIMPLE_AI_MODEL      — model id (default: "gpt-4o-mini" for OpenAI)
-//   GEMINI_MODEL         — model id (default: "gemini-2.5-flash")
+//   SIMPLE_AI_MODEL      — model id (default: "gemini-2.5-flash" for Gemini)
+//   GEMINI_MODEL         — optional Gemini-specific model override
 //   SIMPLE_AI_TIMEOUT_MS — request timeout in ms (default: 30000)
 //
 // Mock mode
 // ─────────
-// When no valid API key is available, or SIMPLE_AI_PROVIDER is not set,
-// the executor runs in MOCK mode. Mock responses are clearly labelled
-// "[MOCK — no AI call made]" so you can always tell the difference.
+// Mock mode is available only when explicitly selected. Missing credentials
+// for a real provider return an error; they never silently switch to mock.
 //
 // Adding a new provider
 // ─────────────────────
@@ -33,6 +32,11 @@
 
 import { IncomingTask, ExecutionResult, TokenUsage, TaskStatus } from "../types";
 import type { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import * as path from "path";
+import { config as loadDotEnv } from "dotenv";
+import { loadConfig } from "../setup/config";
+
+loadDotEnv({ path: path.resolve(__dirname, "../../.env"), quiet: true });
 
 // ── Provider interface ────────────────────────────────────────────────────────
 
@@ -71,12 +75,9 @@ const MockProvider: SimpleAIProvider = {
 const OpenAIProvider: SimpleAIProvider = {
   name: "openai",
   async call(prompt, modelId, timeoutMs) {
-    const apiKey = process.env.OPENAI_API_KEY;
+    const apiKey = process.env.OPENAI_API_KEY || process.env.SIMPLE_AI_KEY;
     if (!apiKey) {
-      throw new Error(
-        "OPENAI_API_KEY environment variable is not set. " +
-        "Set SIMPLE_AI_PROVIDER=mock to use mock mode."
-      );
+      throw new Error("OPENAI_API_KEY or SIMPLE_AI_KEY environment variable is not set.");
     }
 
     let OpenAI: typeof import("openai").default;
@@ -146,7 +147,7 @@ export function createGeminiProvider(createClient: GeminiClientFactory): SimpleA
   return {
     name: "gemini",
     async call(prompt, modelId, timeoutMs) {
-      const apiKey = process.env.GEMINI_API_KEY;
+      const apiKey = process.env.GEMINI_API_KEY || process.env.SIMPLE_AI_KEY;
       if (!apiKey) throw new Error("GEMINI_API_KEY environment variable is not set.");
 
       const client = await createClient(apiKey, timeoutMs);
@@ -172,8 +173,8 @@ const GeminiProvider = createGeminiProvider(async (apiKey, timeoutMs) => {
   try {
     const { GoogleGenAI } = await import("@google/genai");
     return new GoogleGenAI({ apiKey, httpOptions: { timeout: timeoutMs } });
-  } catch {
-    throw new Error("Gemini SDK could not be loaded. Reinstall project dependencies.");
+  } catch (cause) {
+    throw new Error("Gemini SDK could not be loaded.", { cause });
   }
 });
 
@@ -185,41 +186,181 @@ const PROVIDERS: Record<string, SimpleAIProvider> = {
   gemini: GeminiProvider,
 };
 
+function getConfiguredProviderName(): string {
+  return (process.env.SIMPLE_AI_PROVIDER ?? loadConfig().simpleAiProvider ?? "gemini").toLowerCase();
+}
+
 function getProvider(): SimpleAIProvider {
-  const name = (process.env.SIMPLE_AI_PROVIDER ?? "mock").toLowerCase();
-  return PROVIDERS[name] ?? MockProvider;
+  const name = getConfiguredProviderName();
+  const provider = PROVIDERS[name];
+  if (!provider) throw new Error(`Unsupported SIMPLE_AI_PROVIDER "${name}".`);
+  return provider;
 }
 
 function getModelId(providerName: string): string {
-  if (providerName === "gemini") return process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+  if (providerName === "gemini") return process.env.GEMINI_MODEL ?? process.env.SIMPLE_AI_MODEL ?? "gemini-2.5-flash";
   if (providerName === "openai") return process.env.SIMPLE_AI_MODEL ?? "gpt-4o-mini";
   return "mock";
 }
 
+export type ProviderErrorCategory =
+  | "authentication"
+  | "quota/rate limit"
+  | "model/access"
+  | "network/timeout"
+  | "unknown";
+
+export interface SafeProviderErrorDiagnostic {
+  category: ProviderErrorCategory;
+  httpStatus?: number;
+  providerCode?: string;
+  message?: string;
+}
+
+type ErrorRecord = Record<string, unknown>;
+
+function collectErrorRecords(error: unknown): ErrorRecord[] {
+  const records: ErrorRecord[] = [];
+  const pending: Array<{ value: unknown; depth: number }> = [{ value: error, depth: 0 }];
+  const seen = new Set<object>();
+  const nestedFields = ["cause", "error", "response", "data", "details"] as const;
+
+  while (pending.length > 0 && records.length < 12) {
+    const current = pending.shift()!;
+    if (current.depth > 4 || current.value === null || typeof current.value !== "object") continue;
+    if (seen.has(current.value)) continue;
+    seen.add(current.value);
+    records.push(current.value as ErrorRecord);
+
+    for (const field of nestedFields) {
+      let nested: unknown;
+      try { nested = (current.value as ErrorRecord)[field]; } catch { continue; }
+      const values = Array.isArray(nested) ? nested.slice(0, 3) : [nested];
+      for (const value of values) {
+        if (value !== null && typeof value === "object") {
+          pending.push({ value, depth: current.depth + 1 });
+        }
+      }
+    }
+  }
+
+  return records;
+}
+
+function readHttpStatus(records: ErrorRecord[]): number | undefined {
+  for (const record of records) {
+    for (const field of ["status", "statusCode", "httpStatus"] as const) {
+      const value = record[field];
+      const status = typeof value === "number" ? value
+        : typeof value === "string" && /^\d{3}$/.test(value) ? Number(value)
+        : undefined;
+      if (status !== undefined && status >= 100 && status <= 599) return status;
+    }
+  }
+  return undefined;
+}
+
+function readProviderCode(records: ErrorRecord[]): string | undefined {
+  for (const record of records) {
+    for (const field of ["code", "reason", "status"] as const) {
+      const value = record[field];
+      if (typeof value === "string" && !/^\d{3}$/.test(value) && value.length <= 120) {
+        return value;
+      }
+    }
+  }
+  return undefined;
+}
+
+function sanitizeDiagnosticMessage(message: string): string | undefined {
+  let safe = message;
+
+  for (const secret of [
+    process.env.GEMINI_API_KEY,
+    process.env.SIMPLE_AI_KEY,
+    process.env.OPENAI_API_KEY,
+  ]) {
+    if (secret) safe = safe.split(secret).join("[REDACTED]");
+  }
+
+  safe = safe
+    .replace(/\b((?:proxy-)?authorization)\s*[:=]\s*(?:(?:bearer|basic)\s+)?[^\s,;]+/gi, "$1: [REDACTED]")
+    .replace(/\b(?:bearer|basic)\s+[A-Za-z0-9._~+/-]+=*/gi, "[REDACTED_AUTH]")
+    .replace(/\b(x-goog-api-key|api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token)\s*[:=]\s*["']?[^\s,"';]+["']?/gi, "$1=[REDACTED]")
+    .replace(/\b(?:AIza[0-9A-Za-z_-]{20,}|AQ\.[0-9A-Za-z._-]{16,}|sk-(?:proj-)?[0-9A-Za-z_-]{16,})\b/g, "[REDACTED]")
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[URL REDACTED]")
+    .replace(/\b(?:prompt|contents|codeSnippet|request body)\s*[:=].*$/i, "[request data redacted]")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  if (!safe) return undefined;
+  return safe.slice(0, 300);
+}
+
+export function getSafeProviderErrorDiagnostic(error: unknown): SafeProviderErrorDiagnostic {
+  const records = collectErrorRecords(error);
+  const httpStatus = readHttpStatus(records);
+  const providerCode = readProviderCode(records);
+  const code = (providerCode ?? "").toUpperCase();
+  const name = records.map((record) => record.name).find((value) => typeof value === "string") as string | undefined;
+  const rawMessage = records
+    .map((record) => record.message)
+    .find((value) => typeof value === "string" && value.length > 0) as string | undefined;
+  const message = rawMessage ? sanitizeDiagnosticMessage(rawMessage) : undefined;
+  const signals = `${code} ${message ?? ""} ${name ?? ""}`.toUpperCase();
+
+  let category: ProviderErrorCategory = "unknown";
+  if (
+    httpStatus === 401 ||
+    code === "API_KEY_INVALID" ||
+    code === "UNAUTHENTICATED" ||
+    /API KEY.{0,40}(INVALID|NOT VALID|UNAUTHENTICATED|MISSING)|(?:INVALID|UNAUTHENTICATED).{0,40}API KEY|AUTHENTICATION FAILED/.test(signals)
+  ) {
+    category = "authentication";
+  } else if (
+    httpStatus === 429 ||
+    code === "RESOURCE_EXHAUSTED" ||
+    /QUOTA|RATE.?LIMIT|RESOURCE_EXHAUSTED/.test(signals)
+  ) {
+    category = "quota/rate limit";
+  } else if (
+    [502, 503, 504].includes(httpStatus ?? 0) ||
+    ["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT"].includes(code) ||
+    ["ABORTERROR", "TIMEOUTERROR"].includes(String(name).toUpperCase()) ||
+    /NETWORK REQUEST FAILED|REQUEST TIMED OUT|TIMEOUT|CONNECTION RESET/.test(signals)
+  ) {
+    category = "network/timeout";
+  } else if (
+    httpStatus === 404 ||
+    code === "NOT_FOUND" ||
+    code === "FAILED_PRECONDITION" ||
+    code === "PERMISSION_DENIED" ||
+    /MODEL.{0,60}(NOT FOUND|NOT AVAILABLE|UNAVAILABLE|UNSUPPORTED|ACCESS|PERMISSION)|PERMISSION_DENIED/.test(signals)
+  ) {
+    category = "model/access";
+  }
+
+  return { category, httpStatus, providerCode: providerCode ? sanitizeDiagnosticMessage(providerCode) : undefined, message };
+}
+
 export function describeProviderError(error: unknown, providerName: string): string {
-  const failure = error as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
-  const knownMessage = error instanceof Error ? error.message : "";
-  const status = Number(failure?.status ?? failure?.statusCode);
-  const code = typeof failure?.code === "string" ? failure.code.toUpperCase() : "";
-  const name = typeof failure?.name === "string" ? failure.name : "";
-  if (providerName === "gemini" && knownMessage === "GEMINI_API_KEY environment variable is not set.") {
-    return "GEMINI_API_KEY environment variable is not set.";
+  const diagnostic = getSafeProviderErrorDiagnostic(error);
+  if (diagnostic.message === "GEMINI_API_KEY environment variable is not set.") {
+    return "category=authentication; GEMINI_API_KEY or SIMPLE_AI_KEY environment variable is not set.";
   }
-  if (providerName === "openai" && knownMessage === "OPENAI_API_KEY environment variable is not set. Set SIMPLE_AI_PROVIDER=mock to use mock mode.") {
-    return "OPENAI_API_KEY environment variable is not set.";
+  if (diagnostic.message === "OPENAI_API_KEY or SIMPLE_AI_KEY environment variable is not set.") {
+    return "category=authentication; OPENAI_API_KEY or SIMPLE_AI_KEY environment variable is not set.";
   }
-  if (knownMessage === "Gemini returned no text content.") return "Gemini returned a malformed response without text content.";
-  const statusLabel = String(failure?.status ?? "").toUpperCase();
-  if (status === 401 || status === 403 || ["PERMISSION_DENIED", "UNAUTHENTICATED"].includes(statusLabel) || ["PERMISSION_DENIED", "UNAUTHENTICATED", "API_KEY_INVALID"].includes(code)) {
-    return `${providerName} authentication failed. Check the configured API key and access permissions.`;
+  if (diagnostic.message === "Gemini returned no text content.") {
+    return "category=unknown; Gemini returned no text content.";
   }
-  if (status === 429 || statusLabel === "RESOURCE_EXHAUSTED" || code === "RESOURCE_EXHAUSTED" || code.includes("RATE_LIMIT")) {
-    return `${providerName} quota or rate limit reached.`;
-  }
-  if (["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"].includes(code) || name === "AbortError") {
-    return `${providerName} network request failed or timed out.`;
-  }
-  return `${providerName} request failed; provider error details were omitted.`;
+
+  const details = [`category=${diagnostic.category}`];
+  if (diagnostic.httpStatus !== undefined) details.push(`httpStatus=${diagnostic.httpStatus}`);
+  if (diagnostic.providerCode) details.push(`providerCode=${diagnostic.providerCode}`);
+  const safeMessage = diagnostic.message ?? "No safe provider details available.";
+  return `${providerName} request failed [${details.join(", ")}]: ${safeMessage}`;
 }
 
 export interface SimpleAIProviderStatus {
@@ -230,9 +371,9 @@ export interface SimpleAIProviderStatus {
 }
 
 export function getSimpleAIProviderStatus(providerOverride?: string): SimpleAIProviderStatus {
-  const provider = (providerOverride ?? process.env.SIMPLE_AI_PROVIDER ?? "mock").toLowerCase();
-  const apiKeyPresent = provider === "openai" ? Boolean(process.env.OPENAI_API_KEY)
-    : provider === "gemini" ? Boolean(process.env.GEMINI_API_KEY)
+  const provider = (providerOverride ?? getConfiguredProviderName()).toLowerCase();
+  const apiKeyPresent = provider === "openai" ? Boolean(process.env.OPENAI_API_KEY || process.env.SIMPLE_AI_KEY)
+    : provider === "gemini" ? Boolean(process.env.GEMINI_API_KEY || process.env.SIMPLE_AI_KEY)
     : false;
   return {
     provider,
@@ -278,12 +419,13 @@ export interface SimpleAIResult extends ExecutionResult {
 
 export async function runSimpleAI(task: IncomingTask): Promise<SimpleAIResult> {
   const start     = Date.now();
-  const provider  = getProvider();
-  const modelId   = getModelId(provider.name);
-  const timeoutMs = getTimeoutMs();
-  const prompt    = buildPrompt(task);
+  let provider: SimpleAIProvider | undefined;
 
   try {
+    provider = getProvider();
+    const modelId   = getModelId(provider.name);
+    const timeoutMs = getTimeoutMs();
+    const prompt    = buildPrompt(task);
     const resp = await provider.call(prompt, modelId, timeoutMs);
 
     return {
@@ -298,14 +440,17 @@ export async function runSimpleAI(task: IncomingTask): Promise<SimpleAIResult> {
       isMock:     resp.isMock,
     };
   } catch (err) {
-    const message = describeProviderError(err, provider.name);
+    const providerName = provider?.name ?? getConfiguredProviderName();
+    const message = provider
+      ? describeProviderError(err, providerName)
+      : (err instanceof Error ? err.message : String(err));
     return {
       taskId:     task.id,
       route:      "SIMPLE_AI",
       output:     `[Simple AI error] ${message}`,
       durationMs: Date.now() - start,
       status:     "FAILED",
-      isMock:     provider.name === "mock",
+      isMock:     provider?.name === "mock",
     };
   }
 }

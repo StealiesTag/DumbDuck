@@ -3,6 +3,6 @@
   "projectRoot": "C:\\Users\\ADMIN\\Desktop\\DumbDuck\\ai-execution-router",
   "workspacePath": "C:\\Users\\ADMIN\\Desktop\\DumbDuck\\ai-execution-router",
   "integrationTarget": "generic",
-  "simpleAiProvider": "openai",
+  "simpleAiProvider": "gemini",
   "lastSetupAt": "2026-09-27T05:58:10.549Z"
 }

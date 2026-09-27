@@ -24,6 +24,7 @@
 
 import * as fs   from "fs";
 import * as path from "path";
+import { PRODUCT_NAME } from "../branding";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Secret redaction
@@ -245,7 +246,7 @@ class MCPDiagnostics {
 
   private _formatStarted(e: DiagEvent): string {
     return (
-      `[AI Execution Router]\n` +
+      `[${PRODUCT_NAME}]\n` +
       `Time:         ${e.timestamp}\n` +
       `Execution ID: ${e.execId}\n` +
       `Tool:         ${e.toolName}\n` +
@@ -260,7 +261,7 @@ class MCPDiagnostics {
       typeof v === "number" ? String(v) : "unavailable";
 
     return (
-      `[AI Execution Router]\n` +
+      `[${PRODUCT_NAME}]\n` +
       `Time:         ${e.timestamp}\n` +
       `Execution ID: ${e.execId}\n` +
       `Tool:         ${e.toolName}\n` +
@@ -281,7 +282,7 @@ class MCPDiagnostics {
 
   private _formatFailed(e: DiagEvent): string {
     return (
-      `[AI Execution Router]\n` +
+      `[${PRODUCT_NAME}]\n` +
       `Time:         ${e.timestamp}\n` +
       `Execution ID: ${e.execId}\n` +
       `Tool:         ${e.toolName}\n` +

@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// MCP Server — AI Execution Router  (v0.5)
+// MCP Server — DumbDuck  (v0.5)
 //
 // Exposes the router as an MCP STDIO server using the official MCP TypeScript SDK.
 // This is an integration layer around the existing router — it does not replace
@@ -41,11 +41,12 @@ import { executionLog }        from "../log/executionLog";
 import { mcpDiag }             from "./diagnostics";
 import { IncomingTask, TaskKind, BaselineRecord, MeasuredUsage } from "../types";
 import { TOOL_SCHEMAS }        from "./tools";
+import { PRODUCT_NAME }        from "../branding";
 
 // ── Server instance ───────────────────────────────────────────────────────────
 
 const server = new Server(
-  { name: "ai-execution-router", version: "0.5.0" },
+  { name: PRODUCT_NAME, version: "0.5.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -161,7 +162,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           id:          taskId,
           description,
           kind,
-          args:        (args.taskArgs as Record<string, string>) ?? {},
+          args:        (args.taskArgs as IncomingTask["args"]) ?? {},
           originatingAgent: String(args.originatingAgent ?? "mcp-client"),
           workspaceRoot,
           context: {
@@ -323,13 +324,13 @@ async function main() {
   await server.connect(transport);
   // Startup message to stderr only — never stdout
   process.stderr.write(
-    "[ai-execution-router MCP v0.5] Server started on STDIO\n" +
-    `[ai-execution-router MCP v0.5] Diagnostics: stderr${process.env.EXECUTION_LOG_PATH ? ` + ${process.env.EXECUTION_LOG_PATH}` : ""}\n` +
-    `[ai-execution-router MCP v0.5] Set MCP_DIAGNOSTICS=0 to suppress stderr output\n`
+    `[${PRODUCT_NAME} MCP v0.5] Server started on STDIO\n` +
+    `[${PRODUCT_NAME} MCP v0.5] Diagnostics: stderr${process.env.EXECUTION_LOG_PATH ? ` + ${process.env.EXECUTION_LOG_PATH}` : ""}\n` +
+    `[${PRODUCT_NAME} MCP v0.5] Set MCP_DIAGNOSTICS=0 to suppress stderr output\n`
   );
 }
 
 main().catch((e) => {
-  process.stderr.write(`[ai-execution-router MCP] Fatal: ${e}\n`);
+  process.stderr.write(`[${PRODUCT_NAME} MCP] Fatal: ${e}\n`);
   process.exit(1);
 });

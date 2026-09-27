@@ -25,6 +25,8 @@ import {
   MCP_ENTRY_POINT,
 } from "./config";
 import { getSimpleAIProviderStatus } from "../executors/simpleAI";
+import { hasRouterAgentInstructions } from "./agentInstructions";
+import { PRODUCT_NAME } from "../branding";
 
 // ── Check result type ─────────────────────────────────────────────────────────
 
@@ -231,7 +233,7 @@ function checkWorkspace(): CheckResult {
 function checkSimpleAIProvider(): CheckResult {
   const provider = process.env.SIMPLE_AI_PROVIDER
     ?? loadConfig(CONFIG_PATH).simpleAiProvider
-    ?? "mock";
+    ?? "gemini";
   const status = getSimpleAIProviderStatus(provider);
 
   if (provider === "mock") {
@@ -239,7 +241,7 @@ function checkSimpleAIProvider(): CheckResult {
       label:  "Simple AI provider",
       status: "INFO",
       detail: "mock mode — no real AI calls will be made",
-      hint:   "Set SIMPLE_AI_PROVIDER=openai or gemini and provide its API key through the MCP server environment.",
+      hint:   "Set SIMPLE_AI_PROVIDER=openai or gemini and provide its API key through .env or the MCP server environment.",
     };
   }
 
@@ -253,12 +255,12 @@ function checkSimpleAIProvider(): CheckResult {
   }
 
   if (!status.apiKeyPresent) {
-    const keyVariable = provider === "gemini" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
+    const keyVariable = provider === "gemini" ? "GEMINI_API_KEY or SIMPLE_AI_KEY" : "OPENAI_API_KEY or SIMPLE_AI_KEY";
     return {
       label: "Simple AI provider",
       status: "WARNING",
-      detail: `${provider} selected but ${keyVariable} is not set in the process environment`,
-      hint: `Set ${keyVariable} in the MCP server environment before starting it.`,
+      detail: `${provider} selected but ${keyVariable} is not set in .env or the process environment`,
+      hint: `Set ${keyVariable} in the project .env file or MCP server environment before starting it.`,
     };
   }
   return {
@@ -270,7 +272,7 @@ function checkSimpleAIProvider(): CheckResult {
 
 function checkExecutionMode(): CheckResult {
   const config    = loadConfig(CONFIG_PATH);
-  const provider  = process.env.SIMPLE_AI_PROVIDER ?? config.simpleAiProvider ?? "mock";
+  const provider  = process.env.SIMPLE_AI_PROVIDER ?? config.simpleAiProvider ?? "gemini";
   const modelPath = path.join(PROJECT_ROOT, "models", "decision_tree.json");
   const hasModel  = fs.existsSync(modelPath);
 
@@ -293,15 +295,22 @@ function checkExecutionMode(): CheckResult {
 }
 
 function checkAgentEnforcement(): CheckResult {
-  // We cannot detect from within this process whether Bob hooks are configured.
-  // Be honest about what we know and don't know.
   const config = loadConfig(CONFIG_PATH);
+  const instructionWorkspace = config.workspacePath ?? config.projectRoot;
+  if (hasRouterAgentInstructions(instructionWorkspace)) {
+    return {
+      label: "Agent hook / enforcement",
+      status: "INFO",
+      detail: `Default-routing guidance found in ${path.join(instructionWorkspace, "AGENTS.md")}`,
+      hint: "Guidance is not enforcement. Host-level hooks are required to prevent native tool use.",
+    };
+  }
   if (!config.integrationTarget || config.integrationTarget === "manual") {
     return {
       label:  "Agent hook / enforcement",
       status: "INFO",
       detail: "No integration target configured",
-      hint:   "Routing is opt-in. The router does not intercept agent built-in tools.",
+      hint:   "Run setup to install default-routing guidance. The router does not intercept agent built-in tools.",
     };
   }
   if (config.integrationTarget === "bob") {
@@ -310,14 +319,14 @@ function checkAgentEnforcement(): CheckResult {
       status: "INFO",
       detail: "Bob integration target set. MCP tools are available when Bob is connected.",
       hint:
-        "Important: MCP alone does not prevent Bob from using its own file/terminal tools. " +
-        "Routing is opt-in. Configure Bob's mode or system prompt to prefer router tools.",
+        "Run setup to install default-routing guidance. MCP alone does not prevent Bob from using its own file/terminal tools.",
     };
   }
   return {
     label:  "Agent hook / enforcement",
     status: "INFO",
     detail: `Generic MCP integration. Enforcement depends on your MCP host configuration.`,
+    hint:   "Run setup to install default-routing guidance. AGENTS.md is guidance, not a host-level tool restriction.",
   };
 }
 
@@ -326,7 +335,7 @@ function checkAgentEnforcement(): CheckResult {
 function printReport(checks: CheckResult[]): void {
   const w = 32;
   console.log("\n" + "=".repeat(58));
-  console.log("  AI Execution Router — System Health Check");
+  console.log(`  ${PRODUCT_NAME} — System Health Check`);
   console.log("=".repeat(58));
 
   let errors = 0, warnings = 0;

@@ -2,11 +2,12 @@
 // Tests: Router (end-to-end routing for each task type)
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { routeTaskLegacy } from "../router/router";
+import { routeTask, routeTaskLegacy } from "../router/router";
 import { clearModelCache }  from "../router/classifier";
 import { executionLog }     from "../log/executionLog";
 import { IncomingTask, Route } from "../types";
 import { TestResult, assertEqual, assert } from "./helpers";
+import * as os from "os";
 import * as fs   from "fs";
 import * as path from "path";
 
@@ -39,6 +40,40 @@ export async function runRoutingTests(): Promise<TestResult[]> {
       result.classifierSource === undefined,
       `${kind}: no classifierSource (ML not invoked)`
     ));
+  }
+
+  const mutationRoot = fs.mkdtempSync(path.join(os.tmpdir(), "router-mutations-"));
+  try {
+    const created = await routeTask(makeTask("CREATE_FILE", "Create a calculation result file", {
+      id: "route-create-file",
+      args: { path: "answer.txt", content: "5*8 = 40\n" },
+      workspaceRoot: mutationRoot,
+    }));
+    results.push(assertEqual(created.route, "DETERMINISTIC", "CREATE_FILE routes deterministically"));
+    results.push(assertEqual(created.status, "SUCCEEDED", "CREATE_FILE succeeds"));
+    results.push(assertEqual(fs.readFileSync(path.join(mutationRoot, "answer.txt"), "utf-8"), "5*8 = 40\n",
+      "CREATE_FILE writes requested contents through the router"));
+
+    const pendingDelete = await routeTask(makeTask("DELETE_FILE", "Delete the calculation result file", {
+      id: "route-delete-file-pending",
+      args: { path: "answer.txt" },
+      workspaceRoot: mutationRoot,
+    }));
+    results.push(assertEqual(pendingDelete.route, "DETERMINISTIC", "DELETE_FILE routes deterministically"));
+    results.push(assertEqual(pendingDelete.status, "NEEDS_APPROVAL", "DELETE_FILE without confirmation needs approval"));
+    results.push(assert(fs.existsSync(path.join(mutationRoot, "answer.txt")),
+      "unapproved routed delete leaves file intact"));
+
+    const deleted = await routeTask(makeTask("DELETE_FILE", "Delete the approved calculation result file", {
+      id: "route-delete-file-approved",
+      args: { path: "answer.txt", confirm: true },
+      workspaceRoot: mutationRoot,
+    }));
+    results.push(assertEqual(deleted.status, "SUCCEEDED", "confirmed DELETE_FILE succeeds"));
+    results.push(assert(!fs.existsSync(path.join(mutationRoot, "answer.txt")),
+      "confirmed routed delete removes the file"));
+  } finally {
+    fs.rmSync(mutationRoot, { recursive: true, force: true });
   }
 
   // ── SUMMARIZE → SIMPLE_AI (via fallback when no model present) ─────────────

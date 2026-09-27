@@ -102,7 +102,7 @@ export const TOOL_SCHEMAS = [
   },
   {
     name:        "route_task",
-    description: "Route a task through the AI Execution Router. Classifies as DETERMINISTIC, SIMPLE_AI, or COMPLEX_AI. Executes deterministic tasks locally, sends simple tasks to the configured lightweight AI model (mock by default), and returns complex tasks as DELEGATED to the originating agent.",
+    description: "Default entry point for workspace and coding operations when this router is connected. Call once per discrete task before using native search, read, write, delete, git, diagnostic, or test tools. CREATE_FILE and DELETE_FILE run deterministically within the workspace; DELETE_FILE requires taskArgs.confirm=true after user authorization. Simple AI tasks use the configured provider, and complex tasks return a delegation recommendation for the host agent.",
     inputSchema: {
       type: "object",
       properties: {
@@ -116,7 +116,7 @@ export const TOOL_SCHEMAS = [
         },
         kind: {
           type:        "string",
-          enum:        ["SEARCH", "READ_FILE", "CALCULATION", "RUN_TESTS", "SUMMARIZE", "DIAGNOSE", "DESIGN", "UNKNOWN"],
+          enum:        ["SEARCH", "READ_FILE", "CALCULATION", "RUN_TESTS", "CREATE_FILE", "DELETE_FILE", "SUMMARIZE", "DIAGNOSE", "DESIGN", "UNKNOWN"],
           description: "Task kind. Used by capability matching and feature extraction.",
         },
         originatingAgent: {
@@ -138,7 +138,15 @@ export const TOOL_SCHEMAS = [
         },
         taskArgs: {
           type:        "object",
-          description: "Additional arguments passed to the executor (e.g. { pattern: 'TODO' }).",
+          description: "Arguments passed to the executor. CREATE_FILE uses path and content; DELETE_FILE uses path and confirm=true after user authorization.",
+          properties: {
+            path: { type: "string", description: "Workspace-relative file path." },
+            content: { type: "string", description: "UTF-8 content for CREATE_FILE (maximum 1 MiB)." },
+            confirm: { type: "boolean", description: "Required true for DELETE_FILE after explicit user authorization." },
+            pattern: { type: "string", description: "Search pattern." },
+            expression: { type: "string", description: "Calculation expression." },
+            suite: { type: "string", description: "Approved test suite name." },
+          },
         },
       },
       required: ["description"],

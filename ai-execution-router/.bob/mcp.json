@@ -7,7 +7,7 @@
         "C:/Users/ADMIN/Desktop/DumbDuck/ai-execution-router/src/mcp/server.ts"
       ],
       "env": {
-        "SIMPLE_AI_PROVIDER": "mock"
+        "SIMPLE_AI_PROVIDER": "gemini"
       }
     }
   }
