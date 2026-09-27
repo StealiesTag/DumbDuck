@@ -1,18 +1,22 @@
 {
   "name": "ai-execution-router",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "AI Execution Router — routes individual tasks to DETERMINISTIC, SIMPLE_AI, or COMPLEX_AI execution",
   "main": "src/index.ts",
   "scripts": {
     "start": "tsx src/index.ts",
+    "mcp:start": "tsx src/mcp/server.ts",
     "test": "tsx src/tests/runner.ts"
   },
   "devDependencies": {
+    "@types/node": "^20.11.0",
     "tsx": "^4.7.0",
-    "typescript": "^5.4.0",
-    "@types/node": "^20.11.0"
+    "typescript": "^5.4.0"
   },
   "allowScripts": {
     "esbuild@0.28.2": true
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1"
   }
 }

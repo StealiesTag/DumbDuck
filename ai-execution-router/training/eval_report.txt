@@ -1,0 +1,40 @@
+============================================================
+AI Execution Router — Training Evaluation Report
+============================================================
+Trained at:           2026-09-27T04:15:23.986269+00:00
+Dataset:              dataset.csv  (31 rows)
+Feature columns (8): reasoningLevel, generationLevel, contextSizeTier, ambiguityTier, filesInvolved, hasErrorMessage, hasCodeSnippet, descriptionLength
+Class labels:         ['SIMPLE_AI', 'COMPLEX_AI']
+Max depth:            4
+Random seed:          42
+Test size:            0.25
+
+Train accuracy:       1.000
+Test  accuracy:       1.000
+
+Cross-validation (5-fold): mean=1.000, std=0.000
+
+Per-class metrics (test set):
+              precision    recall  f1-score   support
+
+   SIMPLE_AI       1.00      1.00      1.00         4
+  COMPLEX_AI       1.00      1.00      1.00         4
+
+    accuracy                           1.00         8
+   macro avg       1.00      1.00      1.00         8
+weighted avg       1.00      1.00      1.00         8
+
+
+Confusion matrix (rows=actual, cols=predicted):
+               SIMPLE_AI      COMPLEX_AI
+  SIMPLE_AI       4              0
+  COMPLEX_AI      0              4
+
+============================================================
+LIMITATIONS
+============================================================
+- Labels are human-assigned policy labels, not empirical measurements.
+- Dataset is small (31 rows). Metrics may not generalise.
+- A decision tree is a simple baseline, not a production classifier.
+- Collect real routing decisions + outcomes before claiming improvements.
+============================================================

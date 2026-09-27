@@ -1,122 +1,214 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Rule-based classifier
+// ML Classifier
 //
-// Decision pipeline:
-//   1. If deterministicAvailable → DETERMINISTIC immediately (no scoring)
-//   2. Otherwise, compute a complexity score from the feature vector
-//   3. Map the score to SIMPLE_AI or COMPLEX_AI via configurable thresholds
+// Loads a trained decision tree exported to JSON by training/train.py and uses
+// it to predict SIMPLE_AI or COMPLEX_AI for a given feature vector.
 //
-// All weights and thresholds are centralised in CLASSIFIER_CONFIG so they
-// can be tuned without changing the classification logic.
+// If no model file exists, the classifier falls back to a simple heuristic
+// that is CLEARLY LABELLED as a fallback — never as an ML prediction.
+//
+// Model file location: models/decision_tree.json
+// (path is configurable via MODEL_PATH below)
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { Task, ClassificationResult, TaskFeatures, ContextSize, AmbiguityLevel } from "../types";
-import { extractFeatures } from "./features";
+import * as fs   from "fs";
+import * as path from "path";
+import {
+  FeatureVector,
+  NamedFeatures,
+  MLLabel,
+  MLClassificationResult,
+  DecisionTreeModel,
+  TreeNode,
+  FEATURE_NAMES,
+  FEATURE_VECTOR_LENGTH,
+} from "../types";
 
-// ── Configuration — change weights here, not in the scoring function ─────────
+// ── Model path ───────────────────────────────────────────────────────────────
 
-export const CLASSIFIER_CONFIG = {
-  weights: {
-    // Each unit of reasoning depth contributes this much to the score
-    reasoningLevel:  2,
-    // Each unit of open-ended generation contributes this much
-    generationLevel: 2,
-    // Context-size bonus (see CONTEXT_SCORE below)
-    contextSize:     1,   // multiplied by a tier value
-    // Ambiguity bonus (see AMBIGUITY_SCORE below)
-    ambiguityLevel:  1,   // multiplied by a tier value
-    // Each additional file touched adds this to the score
-    filesInvolved:   0.5,
-  },
-  // Tier values for ordinal features
-  contextTiers: { none: 0, small: 1, medium: 2, large: 3 } as Record<ContextSize, number>,
-  ambiguityTiers: { none: 0, low: 1, medium: 2, high: 3 } as Record<AmbiguityLevel, number>,
-  // Score thresholds
-  thresholds: {
-    // score < simpleAiMax  → SIMPLE_AI
-    // score >= simpleAiMax → COMPLEX_AI
-    // A SUMMARIZE task with a small context scores 5 (1×2 + 1×2 + 1×1).
-    // Setting the boundary at 6 keeps SUMMARIZE in SIMPLE_AI while
-    // DIAGNOSE (score ≥ 7) and DESIGN (score ≥ 9) remain COMPLEX_AI.
-    simpleAiMax: 6,
-  },
-} as const;
+const MODEL_PATH = path.resolve(__dirname, "../../models/decision_tree.json");
 
-// ── Scoring ──────────────────────────────────────────────────────────────────
+// ── Model cache — loaded once, reused for every call ─────────────────────────
 
-function scoreFeatures(features: TaskFeatures): number {
-  const { weights, contextTiers, ambiguityTiers } = CLASSIFIER_CONFIG;
+type ModelState =
+  | { status: "loaded";   model: DecisionTreeModel }
+  | { status: "missing" }
+  | { status: "error";    message: string };
 
-  return (
-    features.reasoningLevel  * weights.reasoningLevel +
-    features.generationLevel * weights.generationLevel +
-    contextTiers[features.contextSize]    * weights.contextSize +
-    ambiguityTiers[features.ambiguityLevel] * weights.ambiguityLevel +
-    features.filesInvolved   * weights.filesInvolved
-  );
+let _modelState: ModelState | null = null;
+
+function loadModel(): ModelState {
+  if (_modelState !== null) return _modelState;
+
+  if (!fs.existsSync(MODEL_PATH)) {
+    _modelState = { status: "missing" };
+    return _modelState;
+  }
+
+  try {
+    const raw   = fs.readFileSync(MODEL_PATH, "utf-8");
+    const model = JSON.parse(raw) as DecisionTreeModel;
+
+    // Validate feature name order matches what this code was built against
+    if (!model.feature_names || model.feature_names.length !== FEATURE_VECTOR_LENGTH) {
+      throw new Error(
+        `Model has ${model.feature_names?.length ?? 0} features, ` +
+        `expected ${FEATURE_VECTOR_LENGTH}`
+      );
+    }
+    for (let i = 0; i < FEATURE_NAMES.length; i++) {
+      if (model.feature_names[i] !== FEATURE_NAMES[i]) {
+        throw new Error(
+          `Feature name mismatch at index ${i}: ` +
+          `model has "${model.feature_names[i]}", ` +
+          `code expects "${FEATURE_NAMES[i]}". ` +
+          `Retrain the model after updating features.`
+        );
+      }
+    }
+
+    _modelState = { status: "loaded", model };
+    return _modelState;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    _modelState = { status: "error", message };
+    return _modelState;
+  }
 }
 
-// ── Reason builder — produces human-readable strings for the log ─────────────
+/** Clears the model cache. Used by tests to force a reload. */
+export function clearModelCache(): void {
+  _modelState = null;
+}
 
-function buildReasons(features: TaskFeatures, score: number): string[] {
-  const reasons: string[] = [];
+// ── Decision tree traversal ──────────────────────────────────────────────────
 
-  if (features.requiresLanguageUnderstanding) {
-    reasons.push("Requires natural-language understanding");
-  }
-  if (features.reasoningLevel >= 3) {
-    reasons.push("Requires deep multi-step reasoning");
-  } else if (features.reasoningLevel >= 1) {
-    reasons.push("Requires light reasoning");
-  }
-  if (features.generationLevel >= 3) {
-    reasons.push("Requires large open-ended text/code generation");
-  } else if (features.generationLevel >= 1) {
-    reasons.push("Requires modest text generation");
-  }
-  if (features.filesInvolved >= 3) {
-    reasons.push(`Multiple files involved (${features.filesInvolved})`);
-  }
-  if (features.contextSize === "large" || features.contextSize === "medium") {
-    reasons.push(`Context size is ${features.contextSize}`);
-  }
-  if (features.ambiguityLevel === "high" || features.ambiguityLevel === "medium") {
-    reasons.push(`Task description has ${features.ambiguityLevel} ambiguity`);
-  }
-
-  // Fallback so there is always at least one reason
-  if (reasons.length === 0) {
-    reasons.push(
-      score < CLASSIFIER_CONFIG.thresholds.simpleAiMax
-        ? "Low reasoning/generation requirement"
-        : "Elevated reasoning/generation requirement"
-    );
+function traverseTree(
+  node: TreeNode,
+  vector: FeatureVector,
+  path: string[]
+): { label: MLLabel; decisionPath: string[]; confidence?: number } {
+  // Leaf node
+  if (node.feature_index === -2 || (node.left === null && node.right === null)) {
+    if (!node.class_label) {
+      throw new Error("Leaf node missing class_label — model may be corrupt");
+    }
+    let confidence: number | undefined;
+    if (node.class_counts) {
+      const counts = Object.values(node.class_counts);
+      const total  = counts.reduce((a, b) => a + b, 0);
+      const max    = Math.max(...counts);
+      confidence   = total > 0 ? max / total : undefined;
+    }
+    return { label: node.class_label, decisionPath: path, confidence };
   }
 
-  return reasons;
+  const featureValue = vector[node.feature_index];
+  const featureName  = FEATURE_NAMES[node.feature_index] ?? `feature[${node.feature_index}]`;
+
+  if (featureValue <= node.threshold) {
+    const nextPath = [...path, `${featureName} <= ${node.threshold} → left`];
+    return traverseTree(node.left!, vector, nextPath);
+  } else {
+    const nextPath = [...path, `${featureName} > ${node.threshold} → right`];
+    return traverseTree(node.right!, vector, nextPath);
+  }
+}
+
+// ── Fallback heuristic ────────────────────────────────────────────────────────
+// Used ONLY when the model is unavailable. Explicitly labelled as a fallback.
+// This is NOT an ML prediction. Do not present it as one.
+
+function heuristicFallback(
+  vector: FeatureVector,
+  named: NamedFeatures
+): MLClassificationResult {
+  // Simple rule: high reasoning OR high generation → COMPLEX_AI
+  const isComplex =
+    named.reasoningLevel >= 3 ||
+    named.generationLevel >= 3 ||
+    named.filesInvolved >= 4 ||
+    (named.reasoningLevel >= 2 && named.generationLevel >= 2);
+
+  const label: MLLabel = isComplex ? "COMPLEX_AI" : "SIMPLE_AI";
+
+  return {
+    label,
+    source:        "FALLBACK_HEURISTIC",
+    featureVector: vector,
+    namedFeatures: named,
+    decisionPath:  ["[FALLBACK] No ML model available — using rule-based heuristic"],
+  };
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-export function classify(task: Task): ClassificationResult {
-  const features = extractFeatures(task);
+/**
+ * Classify a feature vector as SIMPLE_AI or COMPLEX_AI.
+ *
+ * If a trained model is available, uses it (source = ML_MODEL).
+ * If not, uses the heuristic fallback (source = FALLBACK_HEURISTIC).
+ *
+ * The caller can inspect result.source to know which path was taken.
+ */
+export function classifyWithML(
+  vector: FeatureVector,
+  named: NamedFeatures
+): MLClassificationResult {
+  const state = loadModel();
 
-  // Fast path — a deterministic tool is available for this task kind
-  if (features.deterministicAvailable) {
-    return {
-      route:    "DETERMINISTIC",
-      score:    0,
-      reasons:  ["A deterministic tool can fully handle this task"],
-      features,
-    };
+  if (state.status === "loaded") {
+    try {
+      const { label, decisionPath, confidence } = traverseTree(
+        state.model.tree,
+        vector,
+        []
+      );
+      const result: MLClassificationResult = {
+        label,
+        source:        "ML_MODEL",
+        featureVector: vector,
+        namedFeatures: named,
+        decisionPath,
+      };
+      if (confidence !== undefined) result.confidence = confidence;
+      return result;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[classifier] ML model traversal failed: ${msg}. Falling back to heuristic.`);
+      return heuristicFallback(vector, named);
+    }
   }
 
-  // Slow path — score the feature vector and pick an AI tier
-  const score   = scoreFeatures(features);
-  const route   = score < CLASSIFIER_CONFIG.thresholds.simpleAiMax
-    ? "SIMPLE_AI"
-    : "COMPLEX_AI";
-  const reasons = buildReasons(features, score);
+  if (state.status === "error") {
+    console.warn(`[classifier] Model load error: ${state.message}. Using fallback heuristic.`);
+  } else {
+    // status === "missing" — log once, quietly
+    if (!_alreadyWarnedMissing) {
+      console.warn(
+        `[classifier] No model found at ${MODEL_PATH}.\n` +
+        `  To train: cd training && pip install -r requirements.txt && python train.py\n` +
+        `  Using FALLBACK_HEURISTIC until a model is available.\n` +
+        `  WARNING: fallback results are NOT ML predictions.`
+      );
+      _alreadyWarnedMissing = true;
+    }
+  }
 
-  return { route, score, features, reasons };
+  return heuristicFallback(vector, named);
+}
+
+let _alreadyWarnedMissing = false;
+
+/** Returns a human-readable status string for the current model state. */
+export function getModelStatus(): string {
+  const state = loadModel();
+  switch (state.status) {
+    case "loaded":
+      return `ML model loaded from ${MODEL_PATH}`;
+    case "missing":
+      return `No model file at ${MODEL_PATH} — using fallback heuristic`;
+    case "error":
+      return `Model load error: ${state.message} — using fallback heuristic`;
+  }
 }

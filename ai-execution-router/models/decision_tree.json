@@ -1,0 +1,60 @@
+{
+  "version": "1.0",
+  "trained_at": "2026-09-27T04:15:23.987606+00:00",
+  "feature_names": [
+    "reasoningLevel",
+    "generationLevel",
+    "contextSizeTier",
+    "ambiguityTier",
+    "filesInvolved",
+    "hasErrorMessage",
+    "hasCodeSnippet",
+    "descriptionLength"
+  ],
+  "class_labels": [
+    "SIMPLE_AI",
+    "COMPLEX_AI"
+  ],
+  "max_depth": 4,
+  "tree": {
+    "feature_index": 0,
+    "threshold": 2.0,
+    "left": {
+      "feature_index": -2,
+      "threshold": -2.0,
+      "left": null,
+      "right": null,
+      "class_label": "SIMPLE_AI",
+      "class_counts": {
+        "COMPLEX_AI": 0,
+        "SIMPLE_AI": 1
+      }
+    },
+    "right": {
+      "feature_index": 1,
+      "threshold": 2.5,
+      "left": {
+        "feature_index": -2,
+        "threshold": -2.0,
+        "left": null,
+        "right": null,
+        "class_label": "COMPLEX_AI",
+        "class_counts": {
+          "COMPLEX_AI": 1,
+          "SIMPLE_AI": 0
+        }
+      },
+      "right": {
+        "feature_index": -2,
+        "threshold": -2.0,
+        "left": null,
+        "right": null,
+        "class_label": "COMPLEX_AI",
+        "class_counts": {
+          "COMPLEX_AI": 1,
+          "SIMPLE_AI": 0
+        }
+      }
+    }
+  }
+}

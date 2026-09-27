@@ -1,25 +1,35 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Feature extractor
+// Feature Extractor
 //
-// Given a Task, produce a TaskFeatures object that the classifier can score.
-// All logic here is deterministic and rule-based — no AI involved.
+// Converts a Task into:
+//   - a NamedFeatures record (for logging and human inspection)
+//   - a FeatureVector (for ML inference)
+//
+// COLUMN ORDER CONTRACT
+// The FeatureVector column order is the shared contract between this file and
+// training/train.py. See the full specification in src/types.ts.
+//
+// If you add or remove a feature you MUST:
+//   1. Update FEATURE_NAMES in src/types.ts
+//   2. Update toNumericVector() below to match the new order
+//   3. Update FEATURE_COLUMNS in training/train.py to match
+//   4. Retrain the model from scratch
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
   Task,
-  TaskFeatures,
   TaskKind,
-  ReasoningLevel,
-  GenerationLevel,
-  ContextSize,
-  AmbiguityLevel,
+  NamedFeatures,
+  FeatureVector,
+  FEATURE_NAMES,
+  FEATURE_VECTOR_LENGTH,
 } from "../types";
 
 // ── Lookup tables keyed by TaskKind ─────────────────────────────────────────
-// Each value reflects the *typical* characteristics of that kind of task.
-// These are intentional heuristics, not scientifically validated weights.
+// These reflect TYPICAL characteristics of each task kind.
+// They are heuristics used to populate the feature vector.
 
-const REASONING_BY_KIND: Record<TaskKind, ReasoningLevel> = {
+const REASONING_BY_KIND: Record<TaskKind, number> = {
   SEARCH:      0,
   READ_FILE:   0,
   CALCULATION: 0,
@@ -30,7 +40,7 @@ const REASONING_BY_KIND: Record<TaskKind, ReasoningLevel> = {
   UNKNOWN:     1,
 };
 
-const GENERATION_BY_KIND: Record<TaskKind, GenerationLevel> = {
+const GENERATION_BY_KIND: Record<TaskKind, number> = {
   SEARCH:      0,
   READ_FILE:   0,
   CALCULATION: 0,
@@ -41,66 +51,107 @@ const GENERATION_BY_KIND: Record<TaskKind, GenerationLevel> = {
   UNKNOWN:     1,
 };
 
-const LANGUAGE_UNDERSTANDING_BY_KIND: Record<TaskKind, boolean> = {
-  SEARCH:      false,
-  READ_FILE:   false,
-  CALCULATION: false,
-  RUN_TESTS:   false,
-  SUMMARIZE:   true,
-  DIAGNOSE:    true,
-  DESIGN:      true,
-  UNKNOWN:     false,
-};
+// ── Context size tier ────────────────────────────────────────────────────────
+// none=0, small=1, medium=2, large=3
 
-const DETERMINISTIC_KINDS: Set<TaskKind> = new Set([
-  "SEARCH",
-  "READ_FILE",
-  "CALCULATION",
-  "RUN_TESTS",
-]);
+function contextSizeTier(task: Task): number {
+  const n       = task.context?.filesInvolved?.length ?? 0;
+  const hasErr  = task.context?.errorMessage ? 1 : 0;
+  const hasCode = task.context?.codeSnippet  ? 1 : 0;
 
-// ── Context size heuristic ───────────────────────────────────────────────────
-
-function inferContextSize(task: Task): ContextSize {
-  const fileCount = task.context?.filesInvolved?.length ?? 0;
-  const hasError  = !!task.context?.errorMessage;
-  const hasCode   = !!task.context?.codeSnippet;
-
-  if (fileCount >= 4)          return "large";
-  if (fileCount >= 2)          return "medium";
-  if (fileCount === 1 || hasError || hasCode) return "small";
-  return "none";
+  if (n >= 4)                            return 3; // large
+  if (n >= 2)                            return 2; // medium
+  if (n === 1 || hasErr || hasCode)      return 1; // small
+  return 0;                                        // none
 }
 
-// ── Ambiguity heuristic ──────────────────────────────────────────────────────
-// Tasks whose descriptions contain vague or open-ended language are rated higher.
+// ── Ambiguity tier ────────────────────────────────────────────────────────────
+// none=0, low=1, medium=2, high=3
+// Counts vague/open-ended keywords in the task description.
 
 const AMBIGUOUS_KEYWORDS = [
   "design", "refactor", "propose", "architecture", "plan", "best",
   "improve", "restructure", "consider", "suggest",
 ];
 
-function inferAmbiguity(task: Task): AmbiguityLevel {
+function ambiguityTier(task: Task): number {
   const lower = task.description.toLowerCase();
-  const hits = AMBIGUOUS_KEYWORDS.filter((kw) => lower.includes(kw)).length;
-  if (hits >= 3) return "high";
-  if (hits >= 2) return "medium";
-  if (hits >= 1) return "low";
-  return "none";
+  const hits  = AMBIGUOUS_KEYWORDS.filter((kw) => lower.includes(kw)).length;
+  if (hits >= 3) return 3;
+  if (hits >= 2) return 2;
+  if (hits >= 1) return 1;
+  return 0;
 }
 
-// ── Public API ───────────────────────────────────────────────────────────────
+// ── Description length bucket ────────────────────────────────────────────────
+// 0 (<20 chars), 1 (<50), 2 (<100), 3 (<200), 4 (≥200)
 
-export function extractFeatures(task: Task): TaskFeatures {
-  const fileCount = task.context?.filesInvolved?.length ?? 0;
+function descriptionLengthBucket(desc: string): number {
+  const n = desc.length;
+  if (n < 20)  return 0;
+  if (n < 50)  return 1;
+  if (n < 100) return 2;
+  if (n < 200) return 3;
+  return 4;
+}
 
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/**
+ * Returns a NamedFeatures record for this task.
+ * All values are numeric. Use this for logging and test assertions.
+ */
+export function extractNamedFeatures(task: Task): NamedFeatures {
   return {
-    deterministicAvailable:       DETERMINISTIC_KINDS.has(task.kind),
-    requiresLanguageUnderstanding: LANGUAGE_UNDERSTANDING_BY_KIND[task.kind],
-    reasoningLevel:               REASONING_BY_KIND[task.kind],
-    generationLevel:              GENERATION_BY_KIND[task.kind],
-    contextSize:                  inferContextSize(task),
-    ambiguityLevel:               inferAmbiguity(task),
-    filesInvolved:                fileCount,
+    reasoningLevel:    REASONING_BY_KIND[task.kind],
+    generationLevel:   GENERATION_BY_KIND[task.kind],
+    contextSizeTier:   contextSizeTier(task),
+    ambiguityTier:     ambiguityTier(task),
+    filesInvolved:     task.context?.filesInvolved?.length ?? 0,
+    hasErrorMessage:   task.context?.errorMessage ? 1 : 0,
+    hasCodeSnippet:    task.context?.codeSnippet  ? 1 : 0,
+    descriptionLength: descriptionLengthBucket(task.description),
   };
 }
+
+/**
+ * Returns a FeatureVector (number[]) in the canonical column order defined
+ * by FEATURE_NAMES in src/types.ts.
+ *
+ * This is the value passed to the decision tree at inference time.
+ */
+export function toNumericVector(features: NamedFeatures): FeatureVector {
+  // Order MUST match FEATURE_NAMES exactly.
+  const vec: FeatureVector = [
+    features.reasoningLevel,     // 0
+    features.generationLevel,    // 1
+    features.contextSizeTier,    // 2
+    features.ambiguityTier,      // 3
+    features.filesInvolved,      // 4
+    features.hasErrorMessage,    // 5
+    features.hasCodeSnippet,     // 6
+    features.descriptionLength,  // 7
+  ];
+
+  // Runtime guard — catches accidental column additions/removals
+  if (vec.length !== FEATURE_VECTOR_LENGTH) {
+    throw new Error(
+      `Feature vector length mismatch: expected ${FEATURE_VECTOR_LENGTH}, got ${vec.length}. ` +
+      `Update FEATURE_NAMES in types.ts and retrain the model.`
+    );
+  }
+
+  return vec;
+}
+
+/**
+ * Convenience function: extract named features and immediately convert to vector.
+ */
+export function extractFeatureVector(task: Task): { named: NamedFeatures; vector: FeatureVector } {
+  const named  = extractNamedFeatures(task);
+  const vector = toNumericVector(named);
+  return { named, vector };
+}
+
+// Re-export the feature name list for use in logs and tests
+export { FEATURE_NAMES };

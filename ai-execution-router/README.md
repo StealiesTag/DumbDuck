@@ -1,235 +1,540 @@
 # AI Execution Router
 
-A TypeScript/Node.js prototype that routes individual AI agent tasks to the cheapest execution method capable of completing them.
+An agent-agnostic execution routing system that classifies individual agent tasks
+and routes them to the cheapest execution method capable of handling them —
+deterministic local tools, a lightweight AI model, or delegation back to the
+originating agent.
+
+> Bob is used as the first integration target, but the core router is
+> independent of any specific agent.
+
+---
+
+## Table of contents
+
+1. [What the project does](#1-what-the-project-does)
+2. [Architecture and execution flow](#2-architecture-and-execution-flow)
+3. [Requirements and installation](#3-requirements-and-installation)
+4. [Running the CLI](#4-running-the-cli)
+5. [Training the ML model](#5-training-the-ml-model)
+6. [Starting the MCP server](#6-starting-the-mcp-server)
+7. [Configuring the MCP server in Bob](#7-configuring-the-mcp-server-in-bob)
+8. [Selecting a workspace](#8-selecting-a-workspace)
+9. [Available MCP tools](#9-available-mcp-tools)
+10. [Security boundaries and limitations](#10-security-boundaries-and-limitations)
+11. [How complex-task delegation works](#11-how-complex-task-delegation-works)
+12. [Configuring the simple AI model](#12-configuring-the-simple-ai-model)
+13. [Execution reports](#13-execution-reports)
+14. [Running tests](#14-running-tests)
+15. [Feature definitions and column order](#15-feature-definitions-and-column-order)
+16. [What is mocked vs real](#16-what-is-mocked-vs-real)
+17. [Dataset and model limitations](#17-dataset-and-model-limitations)
+18. [Example workflow](#18-example-workflow)
+19. [Known limitations and next steps](#19-known-limitations-and-next-steps)
 
 ---
 
 ## 1. What the project does
 
-When an AI agent works on a user request, it typically decomposes the request into many small tasks — search a file, read a config, calculate a value, summarise an error, diagnose a bug, design a change.
+A user gives an AI agent a task. The agent decomposes the request into individual
+operations: search a repository, read a file, diagnose a bug, design a change.
 
-The **AI Execution Router** intercepts each task and assigns it to one of three execution tiers:
+This router intercepts each operation **independently** and assigns it the
+cheapest execution path capable of completing it:
 
-| Tier | Label | Description |
-|------|-------|-------------|
-| 0 | `DETERMINISTIC` | Solved by a local program/tool — no AI at all |
-| 1 | `SIMPLE_AI` | Solved by a lightweight / cheap language model |
-| 2 | `COMPLEX_AI` | Solved by a powerful language model |
+| Tier | Label | Handled by |
+|------|-------|------------|
+| 0 | `DETERMINISTIC` | Local tool — no AI model involved |
+| 1 | `SIMPLE_AI` | Lightweight model (mock by default) |
+| 2 | `COMPLEX_AI` | Delegated back to the originating agent |
 
-The goal: **avoid spending AI tokens on tasks that don't need them**.
-
----
-
-## 2. Why task-level routing is different from classifying an entire prompt
-
-A common approach is to look at a whole user message ("is this hard or easy?") and send the entire conversation to one model tier.
-
-This project takes a finer-grained view. A single user request often contains a mix of subtasks at very different complexity levels:
-
-```
-User: "Find all TODO comments, read the config, then diagnose the crash in auth"
-          │                    │                  └─ COMPLEX_AI  (multi-file reasoning)
-          │                    └──────────────────── DETERMINISTIC (file read)
-          └───────────────────────────────────────── DETERMINISTIC (text search)
-```
-
-Routing the entire conversation to `COMPLEX_AI` wastes tokens on trivial subtasks.
-Routing it to `SIMPLE_AI` may fail on the hard subtask.
-**Per-task routing** uses the right resource for each piece of work.
+Why task-level routing matters: routing an entire conversation to `COMPLEX_AI`
+wastes tokens on trivial steps. Routing it to `SIMPLE_AI` may fail on hard steps.
+Per-task routing uses the right resource for each piece of work.
 
 ---
 
-## 3. Architecture
+## 2. Architecture and execution flow
 
 ```
 src/
-├── index.ts              Entry point — runs the mock agent and router
-├── types.ts              All shared types (Task, Route, TaskFeatures, …)
+├── types.ts                   All shared types — task contract, feature vector, records
+├── index.ts                   CLI entry point
 │
 ├── agent/
-│   └── mockAgent.ts      Simulates an AI agent producing 7 observable tasks
+│   └── mockAgent.ts           7-task mock agent for repeatable demos/tests
 │
 ├── router/
-│   ├── features.ts       Extracts a feature vector from a Task
-│   ├── classifier.ts     Scores features → selects a Route
-│   └── router.ts         Orchestrates classify → log → execute → summarise
+│   ├── capabilityMatcher.ts   Step 1: is there a deterministic tool for this kind?
+│   ├── features.ts            Step 2: extract 8-column numeric feature vector
+│   ├── classifier.ts          Step 3: load JSON decision tree → predict SIMPLE/COMPLEX
+│   └── router.ts              Orchestrate + log + dispatch → TaskRecord
 │
 ├── executors/
-│   ├── deterministic.ts  Dispatches to local tools (no AI)
-│   ├── simpleAI.ts       Placeholder for a lightweight model
-│   └── complexAI.ts      Placeholder for a powerful model
+│   ├── deterministic.ts       Real workspace tools (search, read, git, tests)
+│   ├── simpleAI.ts            Provider abstraction (mock by default, OpenAI ready)
+│   └── complexAI.ts           Structured delegation payload — no local model call
 │
-└── tools/
-    ├── searchFiles.ts    Walks the filesystem looking for a pattern
-    ├── readFile.ts       Reads a file from disk
-    ├── calculator.ts     Parses and evaluates arithmetic expressions
-    └── runTests.ts       Mocked test-suite runner
+├── workspace/
+│   ├── WorkspaceManager.ts    Path resolution + traversal prevention
+│   └── tools/
+│       ├── listFiles.ts       Recursive directory listing (capped)
+│       ├── readFile.ts        Text file reading (size-limited, extension-checked)
+│       ├── searchRepository.ts Pattern search across workspace files
+│       ├── gitOps.ts          git status and git diff (read-only)
+│       └── runTests.ts        Pre-approved test command execution
+│
+├── log/
+│   └── executionLog.ts        Append-only TaskRecord store + report generator
+│
+├── mcp/
+│   ├── server.ts              MCP STDIO server (wraps the router)
+│   └── tools.ts               MCP tool schemas
+│
+└── tests/
+    ├── helpers.ts
+    ├── capabilityMatcher.test.ts
+    ├── features.test.ts
+    ├── classifier.test.ts
+    ├── routing.test.ts
+    ├── workspace.test.ts
+    ├── workspaceTools.test.ts
+    ├── integration.test.ts    (delegation, simpleAI, log, MCP input)
+    └── runner.ts
+
+training/
+├── dataset.csv                31-row labelled starter dataset
+├── train.py                   sklearn training, evaluation, JSON export
+└── requirements.txt
+
+models/
+└── decision_tree.json         Trained model artifact (generated by train.py)
 ```
 
-Data flows in one direction:
+### Pipeline per task
 
 ```
-Task → features.ts → classifier.ts → router.ts → executor → ExecutionResult
-```
-
----
-
-## 4. DETERMINISTIC vs SIMPLE_AI vs COMPLEX_AI
-
-### DETERMINISTIC
-- A known local tool can fully answer the task.
-- Examples: file search, file read, arithmetic, running tests.
-- Zero AI tokens consumed.
-- Fast and perfectly reproducible.
-
-### SIMPLE_AI
-- No local tool can handle the task, but the task is narrow and well-defined.
-- Low reasoning requirement, small context, low ambiguity.
-- Examples: summarising a short error message, rephrasing a sentence.
-- A small / cheap model (e.g. a 7B parameter model, or a low-cost API tier) is sufficient.
-
-### COMPLEX_AI
-- The task requires deep multi-step reasoning, open-ended generation, or spans many files.
-- Examples: diagnosing a race condition across five modules, designing a new architecture.
-- A powerful model (e.g. GPT-4-class, Claude Opus) is needed.
-
----
-
-## 5. How the heuristic classifier works
-
-The classifier is entirely rule-based — no AI is used to classify tasks.
-
-### Step 1 — deterministic fast path
-If the task's `kind` is one of `SEARCH | READ_FILE | CALCULATION | RUN_TESTS`,
-the classifier immediately returns `DETERMINISTIC` without computing a score.
-
-### Step 2 — feature extraction (`features.ts`)
-For all other task kinds, the classifier builds a `TaskFeatures` object:
-
-| Feature | How it is inferred |
-|---------|-------------------|
-| `deterministicAvailable` | Task kind is in the deterministic set |
-| `requiresLanguageUnderstanding` | Lookup table keyed by task kind |
-| `reasoningLevel` (0–3) | Lookup table keyed by task kind |
-| `generationLevel` (0–3) | Lookup table keyed by task kind |
-| `contextSize` (none/small/medium/large) | Number of files + presence of error/code |
-| `ambiguityLevel` (none/low/medium/high) | Count of vague keywords in description |
-| `filesInvolved` | Length of `context.filesInvolved` array |
-
-### Step 3 — scoring (`classifier.ts`)
-```
-complexityScore =
-    reasoningLevel  × 2
-  + generationLevel × 2
-  + contextTier     × 1   (none=0, small=1, medium=2, large=3)
-  + ambiguityTier   × 1   (none=0, low=1, medium=2, high=3)
-  + filesInvolved   × 0.5
-```
-
-All weights are defined in `CLASSIFIER_CONFIG` in `classifier.ts`.
-Thresholds are also there:
-
-```typescript
-thresholds: { simpleAiMax: 6 }
-// score < 6  → SIMPLE_AI
-// score ≥ 6  → COMPLEX_AI
-```
-
-> **Important:** these weights are a starting heuristic, not scientifically validated values.
-> They are intentionally centralised so you can tune them as you collect real data.
-
-### Step 4 — result
-The classifier returns a `ClassificationResult`:
-
-```json
-{
-  "route": "COMPLEX_AI",
-  "score": 9.5,
-  "features": { "reasoningLevel": 3, "filesInvolved": 5, ... },
-  "reasons": [
-    "Requires deep multi-step reasoning",
-    "Multiple files involved (5)",
-    "Context size is medium"
-  ]
-}
+IncomingTask
+ │
+ ├─ capabilityMatcher ──── matched? ─── YES ──→ deterministic executor → TaskRecord
+ │                              │
+ │                              NO
+ │                              ↓
+ ├─ features.ts    (FeatureVector, NamedFeatures)
+ │
+ ├─ classifier.ts
+ │     ├─ model present? YES → traverseTree() → ML_MODEL
+ │     └─ model absent?  NO  → heuristicFallback() → FALLBACK_HEURISTIC
+ │
+ ├─ SIMPLE_AI → simpleAI executor → TaskRecord
+ └─ COMPLEX_AI → complexAI delegation → TaskRecord (status=DELEGATED)
+                                         ↓
+                               returned to originating agent
 ```
 
 ---
 
-## 6. How to run the project
+## 3. Requirements and installation
 
-### Prerequisites
-- Node.js 18+
-- npm
+### System requirements
+- Node.js 18+, npm
+- Python 3.8+ and pip (only for training)
+- Git (optional — required for `get_git_status` and `get_git_diff`)
 
 ### Install
-```bash
+
+```powershell
 cd ai-execution-router
 npm install
 ```
 
-### Run the main demo
-```bash
+---
+
+## 4. Running the CLI
+
+```powershell
 npm start
 ```
 
-You will see the mock agent's 7 tasks classified, routed, and executed, followed by a routing summary.
+Runs the 7-task mock demo. Prints classification, routing, and execution for
+each task. Ends with a routing summary and execution log report.
 
-### Run the classifier tests
-```bash
+---
+
+## 5. Training the ML model
+
+```powershell
+cd training
+pip install -r requirements.txt
+python train.py
+cd ..
+```
+
+This produces `models/decision_tree.json` and `training/eval_report.txt`.
+
+The classifier is automatically used on the next `npm start` or MCP call.
+Without a trained model, a clearly-labelled rule-based fallback is used.
+
+---
+
+## 6. Starting the MCP server
+
+```powershell
+npm run mcp:start
+```
+
+The server uses STDIO transport. Bob (and any other MCP client) connects
+to it as a subprocess.
+
+To test it manually:
+
+```powershell
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | npm run mcp:start
+```
+
+---
+
+## 7. Configuring the MCP server in Bob
+
+Add this to your Bob MCP configuration file.
+
+**Workspace-scoped** (`.bob/mcp.json` in your project):
+
+```json
+{
+  "mcpServers": {
+    "ai-execution-router": {
+      "command": "npx",
+      "args": ["tsx", "C:/Users/ADMIN/Desktop/DumbDuck/ai-execution-router/src/mcp/server.ts"],
+      "env": {
+        "SIMPLE_AI_PROVIDER": "mock"
+      }
+    }
+  }
+}
+```
+
+**With a real OpenAI provider:**
+
+```json
+{
+  "mcpServers": {
+    "ai-execution-router": {
+      "command": "npx",
+      "args": ["tsx", "C:/Users/ADMIN/Desktop/DumbDuck/ai-execution-router/src/mcp/server.ts"],
+      "env": {
+        "SIMPLE_AI_PROVIDER": "openai",
+        "OPENAI_API_KEY": "${env:OPENAI_API_KEY}",
+        "SIMPLE_AI_MODEL": "gpt-4o-mini"
+      }
+    }
+  }
+}
+```
+
+**Global-scoped** (`~/.bob/settings/mcp.json`): use the same JSON, without the
+workspace-specific path constraint.
+
+After saving, Bob hot-reloads the MCP config. The router's tools appear in
+Bob's tool panel.
+
+### Connecting Bob to the router
+
+Two integration modes are available:
+
+**Plan-based routing** — Bob submits a full task plan through `route_task`
+before executing it. The router classifies and executes or delegates each task.
+
+**Tool-call routing** — Bob calls individual tools (`read_file`,
+`search_repository`, etc.) through MCP. The router handles each call.
+
+### About hooks
+
+Bob supports lifecycle hooks that can intercept certain events. Hooks are
+Bob-specific and cannot prevent Bob from using its own built-in file or terminal
+tools unless configured to do so. The current integration uses MCP tools only.
+If you need Bob to prefer router tools over its own, configure that explicitly
+in your Bob mode or system prompt — enforcement is host-dependent.
+
+---
+
+## 8. Selecting a workspace
+
+All file and git operations are scoped to a workspace root.
+
+**From an MCP client (Bob):**
+
+```json
+{
+  "tool": "set_workspace",
+  "arguments": { "path": "C:/Users/ADMIN/my-project" }
+}
+```
+
+**From the TypeScript API:**
+
+```typescript
+import { workspace } from "./src/workspace/WorkspaceManager";
+workspace.setWorkspace("/absolute/path/to/project");
+```
+
+Once set, all file tools resolve paths relative to the workspace root.
+Paths that resolve outside the workspace are rejected with a `PATH_TRAVERSAL` error.
+
+The workspace persists for the lifetime of the MCP server process.
+To switch workspaces, call `set_workspace` again.
+
+---
+
+## 9. Available MCP tools
+
+| Tool | Description |
+|------|-------------|
+| `set_workspace` | Set workspace root. Required before file/git tools. |
+| `list_files` | List files under a workspace-relative directory (max 200 entries). |
+| `read_file` | Read a text file (max 512 KB, text extensions only). |
+| `search_repository` | Search for a pattern across workspace source files (max 100 matches). Excludes `node_modules`, `.git`, `dist`, etc. |
+| `get_git_status` | Git status of the workspace repository. |
+| `get_git_diff` | Git diff (read-only). |
+| `run_tests` | Run a pre-approved test suite. Arbitrary commands are rejected. |
+| `route_task` | Route a task through the full ML + execution pipeline. |
+| `get_execution_report` | JSON summary of all tasks routed in this session. |
+
+---
+
+## 10. Security boundaries and limitations
+
+### What is enforced
+- All file paths are resolved against the workspace root and traversal is rejected.
+- `run_tests` only executes pre-approved commands (`npm-test`, `jest`, `vitest`, `pytest`, `npm-test-ci`). Arbitrary shell strings are never executed.
+- `get_git_status` and `get_git_diff` are read-only operations. No modifications are made.
+- API keys are read from environment variables only — never hardcoded.
+
+### What is NOT enforced
+- The MCP server does not prevent Bob from using its own built-in file or terminal
+  tools. This router is an opt-in integration layer, not a sandbox.
+- A different MCP client connected to the same server shares the workspace.
+- `run_tests` requires a workspace to be set; it does not run in an unscoped state.
+- The MCP server process has access to everything in the workspace — it does not
+  further restrict read access within the workspace.
+
+### Path traversal
+The workspace manager rejects any path that resolves outside the workspace root,
+including `../` sequences and absolute paths to other directories. The error code
+is `PATH_TRAVERSAL` and access is denied.
+
+---
+
+## 11. How complex-task delegation works
+
+When a task is classified as `COMPLEX_AI`, the router does **not** call a
+powerful model locally. Instead, it produces a `DelegationResult`:
+
+```json
+{
+  "taskId": "task-006",
+  "description": "Diagnose a race condition across five modules",
+  "route": "COMPLEX_AI",
+  "status": "DELEGATED",
+  "classifierSource": "ML_MODEL",
+  "decisionPath": ["reasoningLevel > 2 → right", "generationLevel <= 2.5 → left"],
+  "confidence": 1.0,
+  "filesInvolved": ["auth.ts", "session.ts"],
+  "errorMessage": "Intermittent 401 under high concurrency",
+  "note": "This task requires complex AI reasoning. It has been returned to the originating agent with full context. The agent host is responsible for handling this delegation."
+}
+```
+
+The `note` field explicitly states that the agent host must implement the actual
+handoff. **Automatic agent resumption does not happen inside this router.**
+
+If you are integrating with Bob:
+- Bob receives the `route_task` response containing the delegation JSON.
+- Bob can use this context to continue its own reasoning about the task.
+- No additional code in this router is needed for the handoff.
+
+---
+
+## 12. Configuring the simple AI model
+
+The SIMPLE_AI executor selects its provider from environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SIMPLE_AI_PROVIDER` | `mock` | `mock` or `openai` |
+| `OPENAI_API_KEY` | — | Required when provider=openai |
+| `SIMPLE_AI_MODEL` | `gpt-4o-mini` | Model identifier |
+| `SIMPLE_AI_TIMEOUT_MS` | `30000` | Request timeout in ms |
+
+In mock mode, responses are clearly labelled `[MOCK — no AI call made]`.
+No tokens are consumed and no API key is required.
+
+To add a new provider, implement the `SimpleAIProvider` interface in
+[`src/executors/simpleAI.ts`](src/executors/simpleAI.ts) and add it to the
+`PROVIDERS` registry.
+
+---
+
+## 13. Execution reports
+
+Every routed task is appended to the in-memory execution log. Call
+`get_execution_report` from MCP or `executionLog.generateReport()` from code.
+
+The report includes:
+- Total tasks by route and status
+- Real AI call count (non-zero only when `tokenUsage` is populated)
+- Token counts (only when a real provider returns them)
+- `estimatedCostUsd: "NOT_AVAILABLE — no pricing data yet"` — explicitly not
+  fabricated until real baseline data exists
+
+To persist records across sessions, set:
+
+```
+EXECUTION_LOG_PATH=./execution_log.ndjson
+```
+
+Records are written as one JSON object per line (NDJSON).
+
+---
+
+## 14. Running tests
+
+```powershell
 npm test
 ```
 
-Runs 7 test cases and reports pass/fail. Exits with code 1 if any test fails.
+155 tests across 9 suites:
+
+| Suite | Tests |
+|-------|-------|
+| Capability Matcher | 23 |
+| Feature Extractor | 40 |
+| ML Classifier | 13 |
+| Routing (E2E) | 12 |
+| Workspace Manager | 9 |
+| Workspace Tools | 22 |
+| Delegation & SimpleAI | 18 |
+| Execution Log | 11 |
+| MCP Input Handling | 8 |
+
+Tests do not make live API calls. Workspace tests use temporary directories
+that are cleaned up after each run. The ML classifier test writes and deletes
+a temporary model file in `models/`.
 
 ---
 
-## 7. What is mocked vs real
+## 15. Feature definitions and column order
+
+The 8-column feature vector is the contract between `src/router/features.ts`
+and `training/train.py`. **Column order must not change without retraining.**
+
+| Index | Name | Range | Description |
+|-------|------|-------|-------------|
+| 0 | `reasoningLevel` | 0–3 | Depth of multi-step reasoning |
+| 1 | `generationLevel` | 0–3 | Degree of open-ended generation |
+| 2 | `contextSizeTier` | 0–3 | none=0 small=1 medium=2 large=3 |
+| 3 | `ambiguityTier` | 0–3 | none=0 low=1 medium=2 high=3 |
+| 4 | `filesInvolved` | 0–n | Files in context |
+| 5 | `hasErrorMessage` | 0\|1 | Error message present |
+| 6 | `hasCodeSnippet` | 0\|1 | Code snippet present |
+| 7 | `descriptionLength` | 0–4 | Bucketed: <20=0, <50=1, <100=2, <200=3, ≥200=4 |
+
+---
+
+## 16. What is mocked vs real
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| `mockAgent.ts` | **Mock** | Returns a hard-coded list of 7 tasks |
-| `searchFiles.ts` | **Real** | Walks the actual filesystem using Node `fs` |
-| `readFile.ts` | **Real** | Reads actual files from disk |
-| `calculator.ts` | **Real** | Parses and evaluates arithmetic without `eval()` |
-| `runTests.ts` | **Mock** | Returns a fixed result — wire up a real runner later |
-| `classifier.ts` | **Real (rule-based)** | No AI used — fully deterministic heuristic |
-| `simpleAI.ts` | **Mock** | Returns a labelled placeholder string |
-| `complexAI.ts` | **Mock** | Returns a labelled placeholder string |
+| Mock agent | **Mock** | Hard-coded 7-task sequence |
+| Calculator | **Real** | Recursive-descent parser |
+| `listFiles` | **Real** | Walks actual workspace filesystem |
+| `readFile` | **Real** | Reads actual workspace files |
+| `searchRepository` | **Real** | Searches actual workspace files |
+| `getGitStatus` / `getGitDiff` | **Real** | Calls `git` binary |
+| `runTests` | **Real** | Runs approved commands in workspace |
+| `runTests` (legacy, no workspace) | **Mock** | Returns fixed results |
+| ML classifier | **Real** | JSON tree traversal; fallback if no model |
+| `simpleAI` (mock mode) | **Mock** | Clearly labelled `[MOCK]` |
+| `simpleAI` (openai mode) | **Real** | Calls OpenAI API |
+| `complexAI` | **Delegation** | Packages and returns context; no model call |
+| MCP server | **Real** | STDIO, responds to `tools/list` and `tools/call` |
 
 ---
 
-## 8. Future plan for real AI integration and benchmarking
+## 17. Dataset and model limitations
 
-### Replacing the AI executors
-Both `simpleAI.ts` and `complexAI.ts` have a clearly labelled `// Placeholder` block.
-To wire up a real model, install its SDK and replace that block:
+- The starter dataset has **31 rows** with human-assigned policy labels.
+- Perfect accuracy on 31 rows is expected — the tree memorises the examples.
+- This does **not** indicate production readiness.
+- Do not use training or cross-validation metrics to claim improved routing.
+- Collect real routing decisions and outcomes before tuning the model.
 
-```typescript
-// Example — replacing simpleAI.ts with OpenAI
-import OpenAI from "openai";
-const client = new OpenAI();
-const resp = await client.chat.completions.create({
-  model: "gpt-4o-mini",
-  messages: [{ role: "user", content: task.description }],
-});
-output = resp.choices[0].message.content ?? "";
+---
+
+## 18. Example workflow
+
+```
+1. Start MCP server
+   npm run mcp:start
+
+2. Bob connects via MCP (see section 7)
+
+3. User: "Search for TODO comments, read the config, then diagnose the auth crash"
+
+4. Bob calls set_workspace:
+   { "tool": "set_workspace", "arguments": { "path": "/my/project" } }
+
+5. Bob calls route_task for each subtask:
+
+   Task A — Search
+   { "tool": "route_task", "arguments": {
+       "description": "Search for TODO comments",
+       "kind": "SEARCH",
+       "taskArgs": { "pattern": "TODO" }
+   }}
+   → route: DETERMINISTIC, status: SUCCEEDED
+   → Executed by searchRepository in workspace
+
+   Task B — Read file
+   { "tool": "route_task", "arguments": {
+       "description": "Read package.json",
+       "kind": "READ_FILE",
+       "taskArgs": { "path": "package.json" }
+   }}
+   → route: DETERMINISTIC, status: SUCCEEDED
+
+   Task C — Diagnose
+   { "tool": "route_task", "arguments": {
+       "description": "Diagnose the authentication crash",
+       "kind": "DIAGNOSE",
+       "filesInvolved": ["src/auth.ts", "src/session.ts"],
+       "errorMessage": "Intermittent 401 under load"
+   }}
+   → route: COMPLEX_AI, status: DELEGATED
+   → Delegation JSON returned to Bob
+   → Bob uses the delegation context to continue its own reasoning
+
+6. Bob calls get_execution_report to review the session
 ```
 
-The router, classifier, and all other code stay unchanged.
+---
 
-### Replacing the mock agent
-Swap `getMockTasks()` in `index.ts` for a real agent integration that emits
-observable tool-call events (e.g. from LangChain, AutoGen, CrewAI, or a custom agent loop).
+## 19. Known limitations and next steps
 
-### Improving the classifier
-- Collect real routing decisions + outcomes.
-- Measure which classifications were wrong (task succeeded / failed / was too expensive).
-- Use that data to tune `CLASSIFIER_CONFIG` weights and thresholds.
-- Later: replace the rule-based classifier with a small trained model if the rule base becomes too complex.
+### Limitations
+- The MCP server holds a single workspace per process. Multiple clients share it.
+- `runTests` requires the workspace to be set; the mock fallback is used otherwise.
+- The `openai` provider requires `npm install openai` separately (not bundled).
+- Bob hooks are not yet configured — the router does not intercept Bob's own
+  built-in tools. Integration is opt-in via MCP tool calls.
+- No persistence across restarts except via `EXECUTION_LOG_PATH`.
+- The dataset is 31 rows. The model should not be used as a production classifier.
 
-### Adding real cost measurement
-- Record actual token counts returned by the model SDKs.
-- Store them alongside each `ExecutionResult`.
-- Add a pricing table (cost per 1k tokens per model).
-- Compute real dollar savings: `deterministicTaskCount × averageTokenCostIfAIWasUsed`.
+### Recommended next steps
+1. **Grow the dataset** — label real routing decisions from actual agent sessions.
+2. **Measure outcomes** — record whether delegated/routed tasks succeeded.
+3. **Connect Bob hooks** — configure Bob lifecycle hooks to prefer router tools.
+4. **Wire a real provider** — set `SIMPLE_AI_PROVIDER=openai` and `OPENAI_API_KEY`.
+5. **Add write tools** — once read-only tools are validated, add workspace writes
+   with explicit user approval.
+6. **Add token cost tracking** — implement once real provider data is available.
