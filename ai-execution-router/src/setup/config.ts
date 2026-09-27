@@ -32,7 +32,7 @@ export interface RouterConfig {
   /** Integration target chosen during setup */
   integrationTarget?: "bob" | "generic" | "manual";
   /** Simple AI provider name — NOT a secret */
-  simpleAiProvider?: "mock" | "openai" | string;
+  simpleAiProvider?: "mock" | "openai" | "gemini" | string;
   /** ISO timestamp of last setup run */
   lastSetupAt?:      string;
 }
@@ -126,6 +126,8 @@ export function generateBobMcpEntry(
 
   if (simpleAiProvider === "openai") {
     entry.env!["OPENAI_API_KEY"] = "${env:OPENAI_API_KEY}";
+  } else if (simpleAiProvider === "gemini") {
+    entry.env!["GEMINI_API_KEY"] = "${env:GEMINI_API_KEY}";
   }
 
   return { "ai-execution-router": entry };

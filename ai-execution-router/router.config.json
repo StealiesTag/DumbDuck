@@ -2,7 +2,7 @@
   "version": "1",
   "projectRoot": "C:\\Users\\ADMIN\\Desktop\\DumbDuck\\ai-execution-router",
   "workspacePath": "C:\\Users\\ADMIN\\Desktop\\DumbDuck\\ai-execution-router",
-  "integrationTarget": "bob",
-  "simpleAiProvider": "mock",
-  "lastSetupAt": "2026-09-27T04:42:20.286Z"
+  "integrationTarget": "generic",
+  "simpleAiProvider": "openai",
+  "lastSetupAt": "2026-09-27T05:58:10.549Z"
 }

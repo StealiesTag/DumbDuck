@@ -7,12 +7,15 @@
 // ────────────────────
 // The provider is selected by the SIMPLE_AI_PROVIDER env var:
 //   "openai"    — uses the OpenAI chat completions API
+//   "gemini"    — uses Google's Gemini API through @google/genai
 //   "mock"      — returns a clearly labelled stub (default when no key is set)
 //
 // Configuration via environment variables (never hardcoded):
-//   SIMPLE_AI_PROVIDER   — "openai" | "mock"  (default: "mock")
+//   SIMPLE_AI_PROVIDER   — "openai" | "gemini" | "mock" (default: "mock")
 //   OPENAI_API_KEY       — required when provider = "openai"
+//   GEMINI_API_KEY       — required when provider = "gemini"
 //   SIMPLE_AI_MODEL      — model id (default: "gpt-4o-mini" for OpenAI)
+//   GEMINI_MODEL         — model id (default: "gemini-2.5-flash")
 //   SIMPLE_AI_TIMEOUT_MS — request timeout in ms (default: 30000)
 //
 // Mock mode
@@ -29,10 +32,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { IncomingTask, ExecutionResult, TokenUsage, TaskStatus } from "../types";
+import type { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 
 // ── Provider interface ────────────────────────────────────────────────────────
 
-interface SimpleAIProvider {
+export interface SimpleAIProvider {
   name:  string;
   call(prompt: string, modelId: string, timeoutMs: number): Promise<ProviderResponse>;
 }
@@ -40,6 +44,7 @@ interface SimpleAIProvider {
 interface ProviderResponse {
   output:     string;
   modelId:    string;
+  providerId: string;
   tokenUsage?: TokenUsage;
   isMock:     boolean;
 }
@@ -51,8 +56,9 @@ const MockProvider: SimpleAIProvider = {
   async call(prompt, modelId) {
     return {
       output:  `[MOCK — no AI call made] Prompt received (${prompt.length} chars). ` +
-               `Set SIMPLE_AI_PROVIDER=openai and OPENAI_API_KEY to use a real model.`,
+               `Configure SIMPLE_AI_PROVIDER and its provider API key to use a real model.`,
       modelId: "mock",
+      providerId: "mock",
       isMock:  true,
     };
   },
@@ -103,17 +109,80 @@ const OpenAIProvider: SimpleAIProvider = {
     return {
       output:     content,
       modelId:    resp.model,
+      providerId: "openai",
       tokenUsage,
       isMock:     false,
     };
   },
 };
 
+type GeminiClient = Pick<GoogleGenAI, "models">;
+type GeminiClientFactory = (apiKey: string, timeoutMs: number) => Promise<GeminiClient> | GeminiClient;
+
+interface GeminiResponseLike {
+  text?: string;
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    totalTokenCount?: number;
+  };
+}
+
+function readGeminiUsage(response: GeminiResponseLike): TokenUsage | undefined {
+  const usage = response.usageMetadata;
+  if (!usage) return undefined;
+  const values = [usage.promptTokenCount, usage.candidatesTokenCount, usage.totalTokenCount];
+  if (!values.every((value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)) {
+    return undefined;
+  }
+  return {
+    promptTokens: usage.promptTokenCount!,
+    completionTokens: usage.candidatesTokenCount!,
+    totalTokens: usage.totalTokenCount!,
+  };
+}
+
+export function createGeminiProvider(createClient: GeminiClientFactory): SimpleAIProvider {
+  return {
+    name: "gemini",
+    async call(prompt, modelId, timeoutMs) {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) throw new Error("GEMINI_API_KEY environment variable is not set.");
+
+      const client = await createClient(apiKey, timeoutMs);
+      const response: GenerateContentResponse | GeminiResponseLike = await client.models.generateContent({
+        model: modelId,
+        contents: prompt,
+      });
+      if (typeof response.text !== "string" || response.text.length === 0) {
+        throw new Error("Gemini returned no text content.");
+      }
+      return {
+        output: response.text,
+        modelId,
+        providerId: "gemini",
+        tokenUsage: readGeminiUsage(response),
+        isMock: false,
+      };
+    },
+  };
+}
+
+const GeminiProvider = createGeminiProvider(async (apiKey, timeoutMs) => {
+  try {
+    const { GoogleGenAI } = await import("@google/genai");
+    return new GoogleGenAI({ apiKey, httpOptions: { timeout: timeoutMs } });
+  } catch {
+    throw new Error("Gemini SDK could not be loaded. Reinstall project dependencies.");
+  }
+});
+
 // ── Provider registry ─────────────────────────────────────────────────────────
 
 const PROVIDERS: Record<string, SimpleAIProvider> = {
   mock:   MockProvider,
   openai: OpenAIProvider,
+  gemini: GeminiProvider,
 };
 
 function getProvider(): SimpleAIProvider {
@@ -121,8 +190,56 @@ function getProvider(): SimpleAIProvider {
   return PROVIDERS[name] ?? MockProvider;
 }
 
-function getModelId(): string {
-  return process.env.SIMPLE_AI_MODEL ?? "gpt-4o-mini";
+function getModelId(providerName: string): string {
+  if (providerName === "gemini") return process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+  if (providerName === "openai") return process.env.SIMPLE_AI_MODEL ?? "gpt-4o-mini";
+  return "mock";
+}
+
+export function describeProviderError(error: unknown, providerName: string): string {
+  const failure = error as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
+  const knownMessage = error instanceof Error ? error.message : "";
+  const status = Number(failure?.status ?? failure?.statusCode);
+  const code = typeof failure?.code === "string" ? failure.code.toUpperCase() : "";
+  const name = typeof failure?.name === "string" ? failure.name : "";
+  if (providerName === "gemini" && knownMessage === "GEMINI_API_KEY environment variable is not set.") {
+    return "GEMINI_API_KEY environment variable is not set.";
+  }
+  if (providerName === "openai" && knownMessage === "OPENAI_API_KEY environment variable is not set. Set SIMPLE_AI_PROVIDER=mock to use mock mode.") {
+    return "OPENAI_API_KEY environment variable is not set.";
+  }
+  if (knownMessage === "Gemini returned no text content.") return "Gemini returned a malformed response without text content.";
+  const statusLabel = String(failure?.status ?? "").toUpperCase();
+  if (status === 401 || status === 403 || ["PERMISSION_DENIED", "UNAUTHENTICATED"].includes(statusLabel) || ["PERMISSION_DENIED", "UNAUTHENTICATED", "API_KEY_INVALID"].includes(code)) {
+    return `${providerName} authentication failed. Check the configured API key and access permissions.`;
+  }
+  if (status === 429 || statusLabel === "RESOURCE_EXHAUSTED" || code === "RESOURCE_EXHAUSTED" || code.includes("RATE_LIMIT")) {
+    return `${providerName} quota or rate limit reached.`;
+  }
+  if (["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"].includes(code) || name === "AbortError") {
+    return `${providerName} network request failed or timed out.`;
+  }
+  return `${providerName} request failed; provider error details were omitted.`;
+}
+
+export interface SimpleAIProviderStatus {
+  provider: string;
+  model: string;
+  apiKeyPresent: boolean;
+  supported: boolean;
+}
+
+export function getSimpleAIProviderStatus(providerOverride?: string): SimpleAIProviderStatus {
+  const provider = (providerOverride ?? process.env.SIMPLE_AI_PROVIDER ?? "mock").toLowerCase();
+  const apiKeyPresent = provider === "openai" ? Boolean(process.env.OPENAI_API_KEY)
+    : provider === "gemini" ? Boolean(process.env.GEMINI_API_KEY)
+    : false;
+  return {
+    provider,
+    model: getModelId(provider),
+    apiKeyPresent,
+    supported: Object.prototype.hasOwnProperty.call(PROVIDERS, provider),
+  };
 }
 
 function getTimeoutMs(): number {
@@ -162,7 +279,7 @@ export interface SimpleAIResult extends ExecutionResult {
 export async function runSimpleAI(task: IncomingTask): Promise<SimpleAIResult> {
   const start     = Date.now();
   const provider  = getProvider();
-  const modelId   = getModelId();
+  const modelId   = getModelId(provider.name);
   const timeoutMs = getTimeoutMs();
   const prompt    = buildPrompt(task);
 
@@ -176,11 +293,12 @@ export async function runSimpleAI(task: IncomingTask): Promise<SimpleAIResult> {
       durationMs: Date.now() - start,
       status:     "SUCCEEDED",
       modelId:    resp.modelId,
+      providerId: resp.providerId,
       tokenUsage: resp.tokenUsage,
       isMock:     resp.isMock,
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = describeProviderError(err, provider.name);
     return {
       taskId:     task.id,
       route:      "SIMPLE_AI",

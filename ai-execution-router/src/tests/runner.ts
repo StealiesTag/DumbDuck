@@ -18,6 +18,7 @@ import {
   runDelegationTests,
   runExecutionLogTests,
   runMCPInputTests,
+  runGeminiProviderTests,
 } from "./integration.test";
 import {
   runConfigTests,
@@ -39,6 +40,7 @@ import {
   runNoDuplicatesTests,
 } from "./telemetry.test";
 import { runSuite } from "./helpers";
+import { runBenchmarkTests } from "./benchmark.test";
 
 async function main(): Promise<void> {
   console.log("\nAI Execution Router — Test Suite (v0.5)");
@@ -71,6 +73,7 @@ async function main(): Promise<void> {
   tally(runSuite("Workspace Manager",   runWorkspaceTests()));
   tally(runSuite("Workspace Tools",     runWorkspaceToolTests()));
   tally(runSuite("Delegation & SimpleAI", await runDelegationTests()));
+  tally(runSuite("Gemini Provider (mocked)", await runGeminiProviderTests()));
   tally(runSuite("Execution Log",       await runExecutionLogTests()));
   tally(runSuite("MCP Input Handling",  await runMCPInputTests()));
 
@@ -92,6 +95,7 @@ async function main(): Promise<void> {
   tally(runSuite("JSONL Persistence",   await runJsonlPersistenceTests()));
   tally(runSuite("MCP Protocol Safety", runMCPProtocolSafetyTests()));
   tally(runSuite("No Duplicate Records",await runNoDuplicatesTests()));
+  tally(runSuite("Local Benchmark",      runBenchmarkTests()));
 
   console.warn = originalWarn;
 

@@ -86,12 +86,25 @@ export function runWorkspaceTests(
   }
 
   const start  = Date.now();
-  const result = spawnSync(approved.cmd, approved.args, {
+  let command = approved.cmd;
+  let args = approved.args;
+  if (process.platform === "win32" && process.env.npm_execpath && (command === "npm" || command === "npx")) {
+    const packageRunner = command;
+    command = process.execPath;
+    args = packageRunner === "npx"
+      ? [process.env.npm_execpath, "exec", "--", ...args]
+      : [process.env.npm_execpath, ...args];
+  } else if (process.platform === "win32" && (command === "npm" || command === "npx")) {
+    const executable = command;
+    command = process.env.ComSpec ?? "cmd.exe";
+    args = ["/d", "/s", "/c", `${executable} ${args.join(" ")}`];
+  }
+  const result = spawnSync(command, args, {
     cwd,
     encoding:  "utf-8",
     maxBuffer: 4 * 1024 * 1024,
     timeout:   TIMEOUT_MS,
-    shell:     false,   // explicit: do not use shell
+    shell:     false,
   });
   const durationMs = Date.now() - start;
 

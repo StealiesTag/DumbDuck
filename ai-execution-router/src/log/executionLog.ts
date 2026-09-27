@@ -22,9 +22,7 @@ import * as path from "path";
 import {
   TaskRecord,
   BaselineRecord,
-  MeasuredUsage,
   SavingsComparison,
-  SavingsMeasurementType,
   Route,
 } from "../types";
 
@@ -38,6 +36,8 @@ export interface TaskTokenBreakdown {
   taskId:            string;
   route:             Route;
   description:       string;
+  providerId?:       string;
+  modelId?:          string;
   /** Tokens consumed by the router's own provider call (SIMPLE_AI only). */
   routerTokens:      number | "UNAVAILABLE";
   /** Tokens consumed by the host model (Bob) — never accessible from here. */
@@ -70,9 +70,9 @@ export interface ExecutionReport {
   /** Real provider calls — only non-zero when a real API was used. */
   realAICallCount:      number;
   /** Tokens used by the router's own provider (SIMPLE_AI) — PROVIDER_REPORTED. */
-  totalPromptTokens:    number;
-  totalCompletionTokens: number;
-  totalTokens:          number;
+  totalPromptTokens:    number | "UNAVAILABLE";
+  totalCompletionTokens: number | "UNAVAILABLE";
+  totalTokens:          number | "UNAVAILABLE";
 
   // Explicitly not reported until real pricing data is available
   estimatedCostUsd:     "NOT_AVAILABLE — no pricing data yet";
@@ -87,7 +87,7 @@ export interface ExecutionReport {
    * Router-only partial token total.
    * Label: PARTIAL — this does NOT include Bob or other host model usage.
    */
-  partialRouterTokens:  number;
+  partialRouterTokens:  number | "UNAVAILABLE";
   partialCoverage:      "PARTIAL — router provider calls only; host model usage unavailable";
 
   /** All savings comparisons computed in this session. */
@@ -146,11 +146,8 @@ class ExecutionLog {
   /**
    * Calculate savings between a baseline record and a routed task record.
    *
-   * Honest rules:
-   * - END_TO_END only when both baseline and routed have real numeric totals
-   *   from PROVIDER_REPORTED or HOST_REPORTED sources covering the full workflow.
-   * - PARTIAL when routed usage is from the router's provider only.
-   * - NOT_CALCULABLE when baseline is zero, missing, or sources are incomparable.
+  * Legacy records lack matching task-definition IDs and full routed host usage,
+  * so they cannot establish comparability and never produce numeric savings.
    */
   calculateSavings(baselineId: string, routedTaskId: string): SavingsComparison {
     const baseline = this._baselines.find((b) => b.id === baselineId);
@@ -166,7 +163,7 @@ class ExecutionLog {
         routedTotalTokens:   "UNAVAILABLE",
         tokensSaved:         "NOT_CALCULABLE",
         percentSaved:        "NOT_CALCULABLE",
-        explanation:         `Baseline record "${baselineId}" not found in this session.`,
+        explanation:         `Token savings: not measurable — no comparable baseline usage data. Baseline record "${baselineId}" not found in this session.`,
         caveats:             ["Baseline was not recorded."],
       };
     }
@@ -181,7 +178,7 @@ class ExecutionLog {
         routedTotalTokens:   "UNAVAILABLE",
         tokensSaved:         "NOT_CALCULABLE",
         percentSaved:        "NOT_CALCULABLE",
-        explanation:         `Routed task "${routedTaskId}" not found in execution log.`,
+        explanation:         `Token savings: not measurable — no comparable baseline usage data. Routed task "${routedTaskId}" not found in execution log.`,
         caveats:             ["Routed task was not recorded."],
       };
     }
@@ -189,92 +186,20 @@ class ExecutionLog {
     const caveats: string[] = [];
     const baseTotal = baseline.usage.totalTokens;
     const routedTotal = this._sumRoutedTokens(routed, caveats);
-
-    // Check whether we have full end-to-end data for both sides
-    const baseIsReal = typeof baseTotal === "number" &&
-      (baseline.usage.source === "PROVIDER_REPORTED" || baseline.usage.source === "HOST_REPORTED");
-    const routedIsReal = typeof routedTotal === "number" &&
-      routed.tokenUsage !== undefined;
-
-    let measurementType: SavingsMeasurementType;
-
-    if (!baseIsReal || baseTotal === 0) {
-      // Can't compute meaningful savings
-      const why = baseTotal === 0
-        ? "Baseline total tokens is zero — percentage would be undefined."
-        : `Baseline source is "${baseline.usage.source}" — not a real provider measurement.`;
-      caveats.push(why);
-      return {
-        measurementType:   "NOT_CALCULABLE",
-        baselineId,
-        routedId:          routedTaskId,
-        taskDescription:   baseline.description,
-        baselineTotalTokens: baseTotal,
-        routedTotalTokens:   routedTotal,
-        tokensSaved:         "NOT_CALCULABLE",
-        percentSaved:        "NOT_CALCULABLE",
-        explanation:         why,
-        caveats,
-      };
-    }
-
-    if (routedTotal === "UNAVAILABLE") {
-      caveats.push("Routed task had no provider token usage (DETERMINISTIC or COMPLEX_AI delegation).");
-      caveats.push("PARTIAL savings cannot be calculated when router usage is also unavailable.");
-      return {
-        measurementType:   "NOT_CALCULABLE",
-        baselineId,
-        routedId:          routedTaskId,
-        taskDescription:   baseline.description,
-        baselineTotalTokens: baseTotal,
-        routedTotalTokens:   "UNAVAILABLE",
-        tokensSaved:         "NOT_CALCULABLE",
-        percentSaved:        "NOT_CALCULABLE",
-        explanation:         "Router used no AI provider for this task — no token usage to compare.",
-        caveats,
-      };
-    }
-
-    // We have numeric values for both sides.
-    // Determine whether this is END_TO_END or PARTIAL.
-    if (!routedIsReal) {
-      measurementType = "PARTIAL";
-      caveats.push(
-        "PARTIAL measurement: routed token count covers the router's provider call only. " +
-        "Bob's host model usage is not accessible via MCP and is NOT included."
-      );
-    } else if (baseline.usage.source === "PROVIDER_REPORTED" && routedIsReal) {
-      // Both sides have real provider data, but we still can't confirm Bob's
-      // own usage was zero on the routed side.
-      measurementType = "PARTIAL";
-      caveats.push(
-        "PARTIAL measurement: baseline covers full workflow; " +
-        "routed total covers the router's provider call only. " +
-        "Bob's model usage when handling the SIMPLE_AI result is not included."
-      );
-    } else {
-      measurementType = "PARTIAL"; // Default conservative — we never have Bob's side
-      caveats.push(
-        "END_TO_END measurement is not possible because Bob's host model token usage " +
-        "is not accessible to the MCP server. This is PARTIAL data only."
-      );
-    }
-
-    const saved    = baseTotal - routedTotal;
-    const pctSaved = Math.round((saved / baseTotal) * 100 * 10) / 10; // 1 decimal
-
+    const explanation = baseTotal === 0
+      ? "Token savings: not measurable — no comparable baseline usage data. Baseline total is zero, so percentage savings is undefined."
+      : "Token savings: not measurable — no comparable baseline usage data. Execution records lack a matching task-definition ID and full routed-workflow usage. Host-model token usage is unavailable via MCP.";
+    caveats.push("Use compareUsageRecords with matching task definitions and complete, compatible provider- or host-reported usage to calculate verified savings.");
     return {
-      measurementType,
+      measurementType:   "NOT_CALCULABLE",
       baselineId,
       routedId:          routedTaskId,
       taskDescription:   baseline.description,
       baselineTotalTokens: baseTotal,
       routedTotalTokens:   routedTotal,
-      tokensSaved:         saved,
-      percentSaved:        pctSaved,
-      explanation:
-        `${measurementType}: baseline ${baseTotal} tokens vs router-provider ${routedTotal} tokens. ` +
-        `Saved ${saved} tokens (${pctSaved}%). ${caveats[0] ?? ""}`,
+      tokensSaved:         "NOT_CALCULABLE",
+      percentSaved:        "NOT_CALCULABLE",
+      explanation,
       caveats,
     };
   }
@@ -353,6 +278,8 @@ class ExecutionLog {
         taskId:            r.taskId,
         route:             r.route,
         description:       r.description,
+        providerId:        r.providerId,
+        modelId:           r.modelId,
         routerTokens:      routerTok,
         hostTokens:        "UNAVAILABLE — host model usage not accessible via MCP",
         routerTokenSource: tokSource,
@@ -361,7 +288,11 @@ class ExecutionLog {
 
     const aiCount  = byRoute.SIMPLE_AI + byRoute.COMPLEX_AI;
     const aiPct    = total > 0 ? Math.round((aiCount / total) * 100) : 0;
-    const partialRouter = promptTokens + completionTokens;
+    const partialRouter = realAICalls > 0
+      ? promptTokens + completionTokens
+      : aiCount > 0 ? "UNAVAILABLE" : 0;
+    const promptTotal = realAICalls > 0 ? promptTokens : aiCount > 0 ? "UNAVAILABLE" : 0;
+    const completionTotal = realAICalls > 0 ? completionTokens : aiCount > 0 ? "UNAVAILABLE" : 0;
 
     return {
       generatedAt:            new Date().toISOString(),
@@ -373,8 +304,8 @@ class ExecutionLog {
       deterministicCount:     byRoute.DETERMINISTIC,
       handledWithoutLLM:      byRoute.DETERMINISTIC,
       realAICallCount:        realAICalls,
-      totalPromptTokens:      promptTokens,
-      totalCompletionTokens:  completionTokens,
+      totalPromptTokens:      promptTotal,
+      totalCompletionTokens:  completionTotal,
       totalTokens:            partialRouter,
       estimatedCostUsd:       "NOT_AVAILABLE — no pricing data yet",
       totalDurationMs:        totalDuration,

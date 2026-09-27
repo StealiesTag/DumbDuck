@@ -154,7 +154,7 @@ export const TOOL_SCHEMAS = [
   },
   {
     name:        "record_baseline",
-    description: "Record a baseline token measurement for a task completed WITHOUT the router. Used to compare against a routed version of the same task. Caller must supply real token counts; mock or estimated values will be flagged as NOT_CALCULABLE in savings reports.",
+    description: "Record a provenance-labelled baseline measurement. Legacy execution records lack matching task definitions and full host usage, so get_savings_report will not claim savings without comparable full-workflow usage.",
     inputSchema: {
       type: "object",
       properties: {
@@ -205,7 +205,7 @@ export const TOOL_SCHEMAS = [
   },
   {
     name:        "get_savings_report",
-    description: "Compare a baseline measurement against a routed task and report token savings. Will return NOT_CALCULABLE if baseline is missing, zero, or not from a real provider. Will return PARTIAL (never END_TO_END) because host model usage is not accessible via MCP.",
+    description: "Compare baseline and routed usage conservatively. Current execution records lack task-definition identity and full host-model usage, so savings remain NOT_CALCULABLE; use benchmark:compare-usage with matching, complete reported measurements for strict comparisons.",
     inputSchema: {
       type: "object",
       properties: {

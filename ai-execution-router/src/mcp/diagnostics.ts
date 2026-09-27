@@ -77,6 +77,8 @@ export interface DiagEvent {
   /** Redacted input summary — safe to write to logs */
   inputSummary?: string;
   route?:       string;
+  providerId?:  string;
+  modelId?:     string;
   status?:      string;
   durationMs?:  number;
   promptTokens?:    number | "unavailable";
@@ -88,6 +90,8 @@ export interface DiagEvent {
 
 export interface CompleteOptions {
   route?:       string;
+  providerId?:  string;
+  modelId?:     string;
   status?:      string;
   durationMs?:  number;
   tokenUsage?:  { promptTokens: number; completionTokens: number; totalTokens: number } | null;
@@ -186,6 +190,8 @@ class MCPDiagnostics {
       timestamp,
       inputSummary:     pending?.inputSummary,
       route:            opts.route,
+      providerId:       opts.providerId,
+      modelId:          opts.modelId,
       status:           opts.status,
       durationMs,
       promptTokens:     promptTok,
@@ -260,6 +266,8 @@ class MCPDiagnostics {
       `Tool:         ${e.toolName}\n` +
       `Input:        ${e.inputSummary ?? "(none)"}\n` +
       `Route:        ${e.route ?? "n/a"}\n` +
+      `Provider:     ${e.providerId ?? "n/a"}\n` +
+      `Model:        ${e.modelId ?? "n/a"}\n` +
       `Status:       ${e.status ?? "completed"}\n` +
       `Duration:     ${e.durationMs ?? 0} ms\n` +
       `Input tokens: ${tok(e.promptTokens ?? "unavailable")}\n` +

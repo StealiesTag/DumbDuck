@@ -187,16 +187,21 @@ async function main(): Promise<void> {
   console.log("  API keys are NOT stored in the config file.");
   console.log("  1) mock  — no real API calls (default)");
   console.log("  2) openai — requires OPENAI_API_KEY env variable");
+  console.log("  3) gemini — requires GEMINI_API_KEY env variable");
 
   let simpleAiProvider = existingConfig.simpleAiProvider ?? "mock";
-  const aiInput = await ask(rl, "Choose [1/2] (default 1 / current: " + simpleAiProvider + "): ");
+  const aiInput = await ask(rl, "Choose [1/2/3] (press Enter to keep current: " + simpleAiProvider + "): ");
   if (aiInput === "2") {
     simpleAiProvider = "openai";
     console.log("  → openai selected. Set OPENAI_API_KEY in your environment.");
     console.log("    IMPORTANT: never paste API keys into this wizard.");
+  } else if (aiInput === "3") {
+    simpleAiProvider = "gemini";
+    console.log("  → Gemini selected. Set GEMINI_API_KEY in the MCP server environment.");
+    console.log("    IMPORTANT: never paste API keys into this wizard.");
   } else if (aiInput === "1" || aiInput === "") {
-    simpleAiProvider = "mock";
-    console.log("  → mock mode (no real AI calls).");
+    if (aiInput === "1") simpleAiProvider = "mock";
+    console.log(simpleAiProvider === "mock" ? "  → mock mode (no real AI calls)." : `  → keeping ${simpleAiProvider}.`);
   }
 
   // ── Step 6: Save config ─────────────────────────────────────────────────────
@@ -284,6 +289,11 @@ async function main(): Promise<void> {
     console.log("  3. Set OPENAI_API_KEY in your environment before starting the server.");
     console.log("     Example (PowerShell): $env:OPENAI_API_KEY='sk-...'");
     console.log("     Example (bash):       export OPENAI_API_KEY=sk-...");
+  } else if (simpleAiProvider === "gemini") {
+    console.log("");
+    console.log("  3. Set GEMINI_API_KEY in the environment inherited by your MCP host.");
+    console.log("     Set GEMINI_MODEL to override the default gemini-2.5-flash model.");
+    console.log("     Never paste the key into this wizard or commit it to configuration.");
   }
 
   if (!workspacePath) {

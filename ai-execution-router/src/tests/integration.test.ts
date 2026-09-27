@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { runComplexAI }   from "../executors/complexAI";
-import { runSimpleAI }    from "../executors/simpleAI";
+import { createGeminiProvider, describeProviderError, getSimpleAIProviderStatus, runSimpleAI } from "../executors/simpleAI";
 import { executionLog }   from "../log/executionLog";
 import { routeTask }      from "../router/router";
 import { clearModelCache } from "../router/classifier";
@@ -97,6 +97,89 @@ export async function runDelegationTests(): Promise<TestResult[]> {
 
   delete process.env.SIMPLE_AI_PROVIDER;
 
+  return results;
+}
+
+export async function runGeminiProviderTests(): Promise<TestResult[]> {
+  const results: TestResult[] = [];
+  const previousKey = process.env.GEMINI_API_KEY;
+  const previousProvider = process.env.SIMPLE_AI_PROVIDER;
+  const previousModel = process.env.GEMINI_MODEL;
+  process.env.GEMINI_API_KEY = "unit-test-key-not-a-credential";
+  process.env.SIMPLE_AI_PROVIDER = "gemini";
+  process.env.GEMINI_MODEL = "gemini-test-model";
+
+  try {
+    let observedTimeout = 0;
+    const provider = createGeminiProvider((_key, timeoutMs) => {
+      observedTimeout = timeoutMs;
+      return {
+        models: {
+          generateContent: async (params: { model: string; contents: string }) => ({
+            text: `Generated for ${params.model}`,
+            usageMetadata: { promptTokenCount: 17, candidatesTokenCount: 8, totalTokenCount: 25 },
+          }),
+        },
+      } as never;
+    });
+    const response = await provider.call("test prompt", "gemini-test-model", 1234);
+    results.push(assertEqual(response.output, "Generated for gemini-test-model", "Gemini provider returns generated text"));
+    results.push(assertEqual(response.providerId, "gemini", "Gemini response identifies provider"));
+    results.push(assertEqual(response.modelId, "gemini-test-model", "Gemini response identifies configured model"));
+    results.push(assertEqual(response.tokenUsage?.promptTokens, 17, "Gemini prompt tokens map to input usage"));
+    results.push(assertEqual(response.tokenUsage?.completionTokens, 8, "Gemini candidate tokens map to output usage"));
+    results.push(assertEqual(response.tokenUsage?.totalTokens, 25, "Gemini total token usage is preserved"));
+    results.push(assertEqual(observedTimeout, 1234, "Gemini request receives configured timeout"));
+    results.push(assert(!response.isMock, "Gemini provider result is not marked mock"));
+
+    const noUsageProvider = createGeminiProvider(() => ({
+      models: { generateContent: async () => ({ text: "No metadata" }) },
+    } as never));
+    const noUsage = await noUsageProvider.call("prompt", "gemini-test-model", 1000);
+    results.push(assertEqual(noUsage.tokenUsage, undefined, "missing Gemini usage metadata remains unavailable"));
+
+    const incompleteProvider = createGeminiProvider(() => ({
+      models: { generateContent: async () => ({ text: "Partial metadata", usageMetadata: { promptTokenCount: 1 } }) },
+    } as never));
+    const incomplete = await incompleteProvider.call("prompt", "gemini-test-model", 1000);
+    results.push(assertEqual(incomplete.tokenUsage, undefined, "incomplete Gemini usage metadata remains unavailable"));
+
+    const malformedProvider = createGeminiProvider(() => ({
+      models: { generateContent: async () => ({ usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 } }) },
+    } as never));
+    let malformedError = "";
+    try { await malformedProvider.call("prompt", "gemini-test-model", 1000); }
+    catch (error) { malformedError = error instanceof Error ? error.message : ""; }
+    results.push(assert(malformedError.includes("no text content"), "malformed response without text is rejected safely"));
+
+    delete process.env.GEMINI_API_KEY;
+    const missingKeyResult = await runSimpleAI(makeTask({ id: "gemini-no-key", kind: "SUMMARIZE" }));
+    results.push(assertEqual(missingKeyResult.status, "FAILED", "Gemini without a key fails without making a request"));
+    results.push(assert(missingKeyResult.output.includes("GEMINI_API_KEY") && !missingKeyResult.output.includes("unit-test-key"),
+      "missing-key failure names the variable without exposing credentials"));
+    process.env.GEMINI_API_KEY = "unit-test-key-not-a-credential";
+
+    const authMessage = describeProviderError({ status: 401, message: "bad key unit-test-key-not-a-credential" }, "Gemini");
+    const invalidKeyMessage = describeProviderError({ code: "API_KEY_INVALID", message: "credential details" }, "Gemini");
+    const quotaMessage = describeProviderError({ status: "RESOURCE_EXHAUSTED", message: "quota detail" }, "Gemini");
+    const networkMessage = describeProviderError({ code: "ECONNRESET", message: "socket detail" }, "Gemini");
+    results.push(assert(authMessage.includes("authentication") && !authMessage.includes("unit-test-key"), "authentication errors are categorized without raw details"));
+    results.push(assert(invalidKeyMessage.includes("authentication") && !invalidKeyMessage.includes("credential details"), "invalid Gemini key errors are categorized safely"));
+    results.push(assert(quotaMessage.includes("quota or rate limit"), "quota errors are categorized safely"));
+    results.push(assert(networkMessage.includes("network request"), "network errors are categorized safely"));
+    const status = getSimpleAIProviderStatus();
+    results.push(assertEqual(status.provider, "gemini", "provider status reports Gemini"));
+    results.push(assertEqual(status.model, "gemini-test-model", "provider status reports configured model"));
+    results.push(assert(status.apiKeyPresent, "provider status reports key presence"));
+    results.push(assert(!JSON.stringify(status).includes("unit-test-key"), "provider status never includes key value"));
+  } finally {
+    if (previousKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousKey;
+    if (previousProvider === undefined) delete process.env.SIMPLE_AI_PROVIDER;
+    else process.env.SIMPLE_AI_PROVIDER = previousProvider;
+    if (previousModel === undefined) delete process.env.GEMINI_MODEL;
+    else process.env.GEMINI_MODEL = previousModel;
+  }
   return results;
 }
 

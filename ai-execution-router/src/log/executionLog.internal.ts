@@ -79,6 +79,7 @@ export class ExecutionLog {
       }
       breakdown.push({
         taskId: r.taskId, route: r.route, description: r.description,
+        providerId: r.providerId, modelId: r.modelId,
         routerTokens: routerTok,
         hostTokens: "UNAVAILABLE — host model usage not accessible via MCP",
         routerTokenSource: tokSource,
@@ -86,13 +87,17 @@ export class ExecutionLog {
     }
 
     const aiCount = byRoute.SIMPLE_AI + byRoute.COMPLEX_AI;
-    const partial = promptTokens + completionTokens;
+    const partial = realAICalls > 0
+      ? promptTokens + completionTokens
+      : aiCount > 0 ? "UNAVAILABLE" : 0;
+    const promptTotal = realAICalls > 0 ? promptTokens : aiCount > 0 ? "UNAVAILABLE" : 0;
+    const completionTotal = realAICalls > 0 ? completionTokens : aiCount > 0 ? "UNAVAILABLE" : 0;
     return {
       generatedAt: new Date().toISOString(), totalTasks: total, byRoute, byStatus,
       aiTaskCount: aiCount, aiTaskPercent: total > 0 ? Math.round(aiCount/total*100) : 0,
       deterministicCount: byRoute.DETERMINISTIC, handledWithoutLLM: byRoute.DETERMINISTIC,
-      realAICallCount: realAICalls, totalPromptTokens: promptTokens,
-      totalCompletionTokens: completionTokens, totalTokens: partial,
+      realAICallCount: realAICalls, totalPromptTokens: promptTotal,
+      totalCompletionTokens: completionTotal, totalTokens: partial,
       estimatedCostUsd: "NOT_AVAILABLE — no pricing data yet", totalDurationMs: totalDuration,
       tokenBreakdown: breakdown, partialRouterTokens: partial,
       partialCoverage: "PARTIAL — router provider calls only; host model usage unavailable",

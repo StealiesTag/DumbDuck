@@ -25,8 +25,11 @@ npm run doctor
 # Interactive first-time setup (workspace, provider, MCP config)
 npm run setup
 
-# Run all 213 tests
+# Run all tests
 npm test
+
+# Run local deterministic tools and summarize timings (no model/API calls)
+npm run benchmark
 
 # Train the ML classifier (requires Python 3.8+)
 cd training && pip install -r requirements.txt && python train.py && cd ..
@@ -213,7 +216,7 @@ The interactive wizard asks for:
 
 1. Your workspace directory (the project you want to route tasks for)
 2. Your integration target (`bob`, `generic`, or `manual`)
-3. Your Simple AI provider (`mock` — no API key — or `openai`)
+3. Your Simple AI provider (`mock`, `openai`, or `gemini`)
 
 It writes `router.config.json` in the project root and prints the MCP
 configuration block to paste into your Bob config file.
@@ -245,7 +248,7 @@ Prints the status of every component:
   ℹ Simple AI provider ............. mock mode — no real AI calls will be made
   ✓ Execution mode ................. ML classifier: ML_MODEL | simple AI: MOCK | ...
   ℹ Agent hook / enforcement ....... Bob integration target set. MCP tools available.
-  ✓ MCP server startup ............. Server started, 9 tools registered
+  ✓ MCP server startup ............. Server started, 11 tools registered
 ==========================================================
 ```
 
@@ -455,14 +458,58 @@ If you are integrating with Bob:
 
 ## 13. Configuring the simple AI model
 
-The SIMPLE_AI executor selects its provider from environment variables:
+The SIMPLE_AI executor selects its provider from the MCP server process
+environment:
 
 | Variable                 | Default         | Description                   |
 | ------------------------ | --------------- | ----------------------------- |
-| `SIMPLE_AI_PROVIDER`   | `mock`        | `mock` or `openai`        |
+| `SIMPLE_AI_PROVIDER`   | `mock`        | `mock`, `openai`, or `gemini` |
 | `OPENAI_API_KEY`       | —              | Required when provider=openai |
-| `SIMPLE_AI_MODEL`      | `gpt-4o-mini` | Model identifier              |
+| `GEMINI_API_KEY`       | —              | Required when provider=gemini |
+| `SIMPLE_AI_MODEL`      | `gpt-4o-mini` | OpenAI model identifier       |
+| `GEMINI_MODEL`         | `gemini-2.5-flash` | Gemini model identifier  |
 | `SIMPLE_AI_TIMEOUT_MS` | `30000`       | Request timeout in ms         |
+
+Gemini uses Google's official [`@google/genai`](https://www.npmjs.com/package/@google/genai)
+SDK. The default Gemini model is `gemini-2.5-flash`; set `GEMINI_MODEL` to a
+model available to your Gemini API project. OpenAI remains available through
+the existing `openai` SDK path and `SIMPLE_AI_MODEL` setting.
+
+The router does not load `.env` files. Set variables in the environment that
+starts VS Code/MCP, or use your MCP host's supported per-server environment
+configuration. For a PowerShell-launched VS Code session, set them before
+launching the host:
+
+```powershell
+$env:SIMPLE_AI_PROVIDER = "gemini"
+$env:GEMINI_API_KEY = "set-this-locally"
+$env:GEMINI_MODEL = "gemini-2.5-flash"
+code .
+```
+
+Use a locally protected environment or secret manager for the key; do not put
+it in source files, committed configuration, or chat. Existing MCP config
+generators produce the non-secret placeholder `${env:GEMINI_API_KEY}`. Restart
+the MCP server after changing its environment. `npm run doctor` reports the
+selected provider/model and whether its key is present, but never prints the
+key value.
+
+Gemini `usageMetadata.promptTokenCount`, `candidatesTokenCount`, and
+`totalTokenCount` are stored as provider-reported prompt, completion, and total
+usage only when all three are present and valid. Missing or incomplete metadata
+stays unavailable; no zero or estimate is substituted. The provider/model
+identity is included with execution records and MCP responses. Authentication,
+quota/rate-limit, and network failures are returned as safe categorized errors;
+raw SDK error messages are not exposed. This integration has been tested with
+mocked SDK responses only; configuration/status checks do not verify live
+connectivity or API-key validity.
+
+To perform one small live check manually after configuring your own key, restart
+the MCP server and submit a short `SUMMARIZE` task with `SIMPLE_AI_PROVIDER=gemini`.
+That request is a real Gemini API call and may consume quota. Confirm the result
+reports `providerId: "gemini"`, the chosen `modelId`, and `tokenUsage` when the
+API returns usage metadata. This repository's automated tests never make that
+request.
 
 In mock mode, responses are clearly labelled `[MOCK — no AI call made]`.
 No tokens are consumed and no API key is required.
@@ -482,7 +529,8 @@ The report includes:
 
 - Total tasks by route and status
 - Real AI call count (non-zero only when `tokenUsage` is populated)
-- Token counts (only when a real provider returns them)
+- Token counts only when a real provider returns them; otherwise AI-task totals
+  are `UNAVAILABLE` rather than silently reported as zero
 - `estimatedCostUsd: "NOT_AVAILABLE — no pricing data yet"` — explicitly not
   fabricated until real baseline data exists
 
@@ -494,6 +542,97 @@ EXECUTION_LOG_PATH=./execution_log.ndjson
 
 Records are written as one JSON object per line (NDJSON).
 
+The legacy MCP `get_savings_report` intentionally does not emit partial savings:
+its execution records do not carry an explicit matching task-definition ID or
+full routed host-model usage. Use the strict benchmark/import comparison below
+when both sides have complete, comparable reported usage.
+
+### Local benchmark and savings reports
+
+Run the local benchmark from the router directory:
+
+```powershell
+npm run benchmark
+```
+
+It calls the existing local tools to list workspace entries, read README
+metadata, search for `TODO`, inspect Git status, and run the approved `npm-test`
+suite. These operations do not call an AI provider. The test suite uses its
+existing temporary fixtures; benchmark tasks do not write to the workspace.
+Reports are appended to
+`%USERPROFILE%\.ai-execution-router\benchmark-results.jsonl` by default. Set
+`BENCHMARK_REPORT_PATH` to choose another location. The approved test-suite
+task forces the mock provider and temporarily removes the OpenAI key from its
+child-process environment, so it cannot make a provider request even when the
+parent shell is configured for OpenAI. Persisted records contain
+task descriptions, status, timestamps, duration, result counts, and typed usage
+metadata; they do not contain read file contents or matching source lines.
+Duplicate run IDs are skipped and malformed JSONL lines are ignored when
+loading saved reports. Persistence errors are sent to stderr and do not fail
+the local tool run.
+
+The elapsed durations are real local measurements. They vary with operating
+system, filesystem caching, workspace size, Git state, installed dependencies,
+and machine load. They are not token measurements and do not prove token or
+cost savings. This benchmark records `unavailable` token usage unless a genuine
+provider or host measurement is explicitly supplied. No tokenizer is installed
+or used.
+
+The shared `UsageData` model labels measurements as `provider_reported`,
+`host_reported`, `locally_estimated`, `synthetic_test`, or `unavailable`.
+Estimates are shown separately from verified totals; synthetic values are
+excluded from real totals and savings. Zero is preserved as a valid measured
+value and is distinct from `UNAVAILABLE`.
+
+MCP execution records cannot currently see Copilot's host-model token usage.
+The MCP process receives tool requests and local execution results, not the
+host application's prompt/completion accounting. Tool duration, output size,
+and the number of tools are not used to infer host tokens.
+
+No comparison is inferred between a deterministic benchmark and a model-driven
+task. Compare saved task records only when their task-definition IDs match and
+both records have complete, compatible provider- or host-reported usage for the
+same provider and model:
+
+```powershell
+npm run benchmark:compare -- <baseline-run-id> <routed-run-id> workspace.search.todo
+```
+
+For separately imported usage, create one JSON file per measurement and run:
+
+```powershell
+npm run benchmark:compare-usage -- .\baseline.json .\routed.json
+```
+
+Each imported file must contain `runId`, `taskId`, `taskDefinitionId`, and a
+`usage` object with `inputTokens`, `outputTokens`, `totalTokens`, `source`, and
+`measurementType`; `model` and `provider` must also match across the pair.
+Only complete, non-synthetic provider/host-reported usage is comparable. The
+comparison validates record presence, exact task-definition ID, measurement
+source, model/provider, and consistent token totals. A deterministic benchmark
+record has unavailable usage, so comparing two ordinary benchmark runs reports
+no measurable savings. When no comparable baseline is available, the report
+says: `Token savings: not measurable — no comparable baseline usage data`.
+
+Illustrative output only (values below are not measurements from this README):
+
+```text
+Benchmark benchmark-example
+Tasks: 5 total, 5 succeeded, 0 failed
+Duration: 8421 ms total, 1684.2 ms average
+Usage: unavailable; host-model usage is not exposed to this MCP server; actual tokens unavailable
+Token savings: not measurable — no comparable baseline usage data.
+Timing note: timings vary by OS, filesystem, workspace size, Git state, dependencies, and machine load.
+```
+
+For the current router, actual benchmark tokens and cost are unavailable. A
+future provider or host integration can populate `UsageData` only from its
+reported usage fields and model/provider identifiers. Locally computed token
+counts, if added later, must use `locally_estimated` and remain separate from
+provider/host measurements; pricing would additionally require valid pricing
+metadata. Without comparable routed and baseline records, savings cannot be
+calculated or claimed.
+
 ---
 
 ## 15. Running tests
@@ -502,24 +641,9 @@ Records are written as one JSON object per line (NDJSON).
 npm test
 ```
 
-213 tests across 14 suites:
-
-| Suite                 | Tests | Added in |
-| --------------------- | ----- | -------- |
-| Capability Matcher    | 23    | v0.2     |
-| Feature Extractor     | 40    | v0.2     |
-| ML Classifier         | 13    | v0.2     |
-| Routing (E2E)         | 12    | v0.2     |
-| Workspace Manager     | 9     | v0.3     |
-| Workspace Tools       | 22    | v0.3     |
-| Delegation & SimpleAI | 18    | v0.3     |
-| Execution Log         | 11    | v0.3     |
-| MCP Input Handling    | 8     | v0.3     |
-| Config Load/Save      | 16    | v0.4     |
-| MCP Config Gen        | 14    | v0.4     |
-| Workspace Validation  | 8     | v0.4     |
-| Doctor Checks         | 13    | v0.4     |
-| Provider Handling     | 7     | v0.4     |
+The runner includes routing, workspace tools, telemetry, MCP protocol safety,
+and local benchmark/report tests. The command prints the current pass/fail
+counts; the test total is not duplicated here so it cannot silently go stale.
 
 Tests do not make live API calls. File I/O tests use OS temporary directories
 cleaned up after each run. The ML classifier test writes and deletes a temporary
@@ -560,6 +684,7 @@ and `training/train.py`. **Column order must not change without retraining.**
 | ML classifier                       | **Real**       | JSON tree traversal; fallback if no model           |
 | `simpleAI` (mock mode)            | **Mock**       | Clearly labelled`[MOCK]`                          |
 | `simpleAI` (openai mode)          | **Real**       | Calls OpenAI API                                    |
+| `simpleAI` (gemini mode)           | **Real**       | Uses `@google/genai`; requires `GEMINI_API_KEY`     |
 | `complexAI`                       | **Delegation** | Packages and returns context; no model call         |
 | MCP server                          | **Real**       | STDIO, responds to`tools/list` and `tools/call` |
 | Setup wizard                        | **Real**       | Reads/writes`router.config.json`                  |

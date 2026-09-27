@@ -95,8 +95,10 @@ export async function runTokenAggregationTests(): Promise<TestResult[]> {
     "aggregation: at least one AI task"));
 
   // Token totals
-  results.push(assertEqual(report.totalTokens, 0,
-    "aggregation: totalTokens=0 (mock provider returns no usage)"));
+  results.push(assertEqual(report.totalTokens, "UNAVAILABLE",
+    "aggregation: totalTokens is unavailable when the mock provider reports no usage"));
+  results.push(assertEqual(report.totalPromptTokens, "UNAVAILABLE",
+    "aggregation: prompt total is unavailable when AI task usage is missing"));
   results.push(assertEqual(report.realAICallCount, 0,
     "aggregation: realAICallCount=0 (mock has no real calls)"));
 
@@ -207,9 +209,11 @@ export async function runSavingsTests(): Promise<TestResult[]> {
   results.push(assertEqual(detSavings.routedTotalTokens, 0,
     "savings: DETERMINISTIC routed task shows 0 router tokens"));
   results.push(assert(
-    detSavings.measurementType === "PARTIAL" || detSavings.measurementType === "NOT_CALCULABLE",
-    "savings: DETERMINISTIC comparison is PARTIAL or NOT_CALCULABLE (no AI provider)"
+    detSavings.measurementType === "NOT_CALCULABLE",
+    "savings: deterministic usage is not comparable to a model baseline"
   ));
+  results.push(assertEqual(detSavings.tokensSaved, "NOT_CALCULABLE",
+    "savings: no partial token savings number is emitted"));
 
   // ── 3d. NOT_CALCULABLE — baseline source is UNAVAILABLE ──────────────────────
   executionLog.recordBaseline(makeBaseline({

@@ -8,7 +8,10 @@
     "mcp:start": "tsx src/mcp/server.ts",
     "setup": "tsx src/setup/setup.ts",
     "doctor": "tsx src/setup/doctor.ts",
-    "test": "tsx src/tests/runner.ts"
+    "test": "tsx src/tests/runner.ts",
+    "benchmark": "tsx src/benchmark/cli.ts run",
+    "benchmark:compare": "tsx src/benchmark/cli.ts compare",
+    "benchmark:compare-usage": "tsx src/benchmark/cli.ts compare-usage"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
@@ -19,6 +22,7 @@
     "esbuild@0.28.2": true
   },
   "dependencies": {
+    "@google/genai": "^2.24.0",
     "@modelcontextprotocol/sdk": "^1.30.1"
   }
 }

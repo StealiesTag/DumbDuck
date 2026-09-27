@@ -24,6 +24,7 @@ import {
   CONFIG_PATH,
   MCP_ENTRY_POINT,
 } from "./config";
+import { getSimpleAIProviderStatus } from "../executors/simpleAI";
 
 // ── Check result type ─────────────────────────────────────────────────────────
 
@@ -137,7 +138,7 @@ function checkMCPStartup(): CheckResult {
 
   const input = JSON.stringify({
     jsonrpc: "2.0", id: 1, method: "tools/list", params: {},
-  });
+  }) + "\n";
 
   const result = spawnSync(fullCmd, [], {
     input,
@@ -231,38 +232,39 @@ function checkSimpleAIProvider(): CheckResult {
   const provider = process.env.SIMPLE_AI_PROVIDER
     ?? loadConfig(CONFIG_PATH).simpleAiProvider
     ?? "mock";
+  const status = getSimpleAIProviderStatus(provider);
 
   if (provider === "mock") {
     return {
       label:  "Simple AI provider",
       status: "INFO",
       detail: "mock mode — no real AI calls will be made",
-      hint:   "Set SIMPLE_AI_PROVIDER=openai and OPENAI_API_KEY to use a real model.",
+      hint:   "Set SIMPLE_AI_PROVIDER=openai or gemini and provide its API key through the MCP server environment.",
     };
   }
 
-  if (provider === "openai") {
-    const hasKey = !!process.env.OPENAI_API_KEY;
-    if (!hasKey) {
-      return {
-        label:  "Simple AI provider",
-        status: "WARNING",
-        detail: "openai selected but OPENAI_API_KEY is not set in the environment",
-        hint:   "Set OPENAI_API_KEY before starting the MCP server.",
-      };
-    }
+  if (!status.supported) {
     return {
-      label:  "Simple AI provider",
-      status: "OK",
-      detail: `openai (model: ${process.env.SIMPLE_AI_MODEL ?? "gpt-4o-mini"})`,
+      label: "Simple AI provider",
+      status: "WARNING",
+      detail: `Unknown provider: "${provider}"`,
+      hint: "Supported: mock, openai, gemini",
     };
   }
 
+  if (!status.apiKeyPresent) {
+    const keyVariable = provider === "gemini" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
+    return {
+      label: "Simple AI provider",
+      status: "WARNING",
+      detail: `${provider} selected but ${keyVariable} is not set in the process environment`,
+      hint: `Set ${keyVariable} in the MCP server environment before starting it.`,
+    };
+  }
   return {
-    label:  "Simple AI provider",
-    status: "WARNING",
-    detail: `Unknown provider: "${provider}"`,
-    hint:   "Supported: mock, openai",
+    label: "Simple AI provider",
+    status: "OK",
+    detail: `${provider} (model: ${status.model}, API key: present)`,
   };
 }
 

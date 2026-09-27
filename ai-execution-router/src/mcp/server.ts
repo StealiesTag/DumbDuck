@@ -177,6 +177,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Report token usage in the completion diagnostic
         mcpDiag.complete(execId, {
           route:      record.route,
+          providerId: record.providerId,
+          modelId:    record.modelId,
           status:     record.status,
           durationMs: record.durationMs,
           tokenUsage: record.tokenUsage ?? null,
@@ -188,6 +190,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           route:            record.route,
           status:           record.status,
           executorName:     record.executorName,
+          providerId:       record.providerId,
+          modelId:          record.modelId,
           classifierSource: record.classifierSource,
           confidence:       record.confidence,
           decisionPath:     record.decisionPath,
@@ -199,6 +203,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           tokenCoverage:    record.tokenUsage
             ? "PARTIAL — router provider call only; host model usage unavailable"
             : "UNAVAILABLE",
+          tokenSource:     record.tokenUsage ? "PROVIDER_REPORTED" : "UNAVAILABLE",
         }, null, 2));
       }
 

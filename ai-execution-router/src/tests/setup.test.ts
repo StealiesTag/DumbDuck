@@ -147,6 +147,12 @@ export function runMcpConfigTests(): TestResult[] {
     "generateBobMcpEntry: openai adds OPENAI_API_KEY placeholder"
   ));
 
+    const geminiEntry = generateBobMcpEntry(fakeRoot, "gemini");
+    results.push(assertEqual(geminiEntry["ai-execution-router"].env?.SIMPLE_AI_PROVIDER, "gemini",
+      "generateBobMcpEntry: gemini provider is configured"));
+    results.push(assertEqual(geminiEntry["ai-execution-router"].env?.GEMINI_API_KEY, "${env:GEMINI_API_KEY}",
+      "generateBobMcpEntry: Gemini credential is an environment placeholder"));
+
   // ── mergeBobMcpJson with null existingContent creates new config ──────────
   const { json: newJson, conflict: noConflict } = mergeBobMcpJson(null, fakeRoot, "mock");
   const parsed = JSON.parse(newJson);
@@ -292,6 +298,8 @@ export function runDoctorTests(): TestResult[] {
     // Save and clear the env var to ensure reproducibility
     const savedProvider = process.env.SIMPLE_AI_PROVIDER;
     const savedApiKey   = process.env.OPENAI_API_KEY;
+    const savedGeminiKey = process.env.GEMINI_API_KEY;
+    const savedGeminiModel = process.env.GEMINI_MODEL;
 
     process.env.SIMPLE_AI_PROVIDER = "mock";
     delete process.env.OPENAI_API_KEY;
@@ -315,12 +323,29 @@ export function runDoctorTests(): TestResult[] {
     results.push(assert(openaiWithKeyCheck.status === "OK",
       "checkSimpleAIProvider: returns OK for openai with OPENAI_API_KEY set"));
 
+    process.env.SIMPLE_AI_PROVIDER = "gemini";
+    delete process.env.GEMINI_API_KEY;
+    const geminiNoKeyCheck = checkSimpleAIProvider();
+    results.push(assert(geminiNoKeyCheck.status === "WARNING" && geminiNoKeyCheck.detail.includes("GEMINI_API_KEY"),
+      "checkSimpleAIProvider: warns when Gemini key is absent"));
+    process.env.GEMINI_API_KEY = "unit-test-gemini-key";
+    process.env.GEMINI_MODEL = "gemini-doctor-test";
+    const geminiWithKeyCheck = checkSimpleAIProvider();
+    results.push(assert(geminiWithKeyCheck.status === "OK", "checkSimpleAIProvider: Gemini key presence reports OK"));
+    results.push(assert(geminiWithKeyCheck.detail.includes("gemini-doctor-test"), "checkSimpleAIProvider: Gemini model is shown"));
+    results.push(assert(geminiWithKeyCheck.detail.includes("API key: present"), "checkSimpleAIProvider: reports presence without key value"));
+    results.push(assert(!geminiWithKeyCheck.detail.includes("unit-test-gemini-key"), "checkSimpleAIProvider: never prints Gemini key value"));
+
     // Restore env
     if (savedProvider === undefined) delete process.env.SIMPLE_AI_PROVIDER;
     else process.env.SIMPLE_AI_PROVIDER = savedProvider;
 
     if (savedApiKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = savedApiKey;
+    if (savedGeminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = savedGeminiKey;
+    if (savedGeminiModel === undefined) delete process.env.GEMINI_MODEL;
+    else process.env.GEMINI_MODEL = savedGeminiModel;
 
     // ── checkExecutionMode returns a result object ────────────────────────────
     const execCheck = checkExecutionMode();
@@ -365,7 +390,7 @@ export function runProviderTests(): TestResult[] {
   const cfgPath = path.join(tmp, "router.config.json");
 
   try {
-    for (const provider of ["mock", "openai"] as const) {
+    for (const provider of ["mock", "openai", "gemini"] as const) {
       saveConfig({ simpleAiProvider: provider }, cfgPath);
       const loaded = loadConfig(cfgPath);
       results.push(assertEqual(loaded.simpleAiProvider, provider,

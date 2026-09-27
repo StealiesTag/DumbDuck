@@ -144,6 +144,7 @@ export interface ExecutionResult {
   output:             string;
   durationMs:         number;
   classifierSource?:  ClassifierSource;  // how the route was decided
+  providerId?:        string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -272,6 +273,7 @@ export interface TaskRecord {
 
   // Model metadata — only populated when a real AI call was made
   modelId?:         string;
+  providerId?:      string;
   tokenUsage?:      TokenUsage;
   estimatedCostUsd?: never;    // never set until real pricing data is available
 
@@ -296,6 +298,24 @@ export type UsageSource =
   | "HOST_REPORTED"        // Reported by the host application (e.g. Bob's UI)
   | "ESTIMATE"             // Calculated estimate, not from a real API call
   | "UNAVAILABLE";         // Data is not accessible in this integration
+
+export type UsageMeasurementType =
+  | "provider_reported"
+  | "host_reported"
+  | "locally_estimated"
+  | "synthetic_test"
+  | "unavailable";
+
+/** Token measurement with explicit provenance, for benchmarks and imports. */
+export interface UsageData {
+  inputTokens: number | "UNAVAILABLE";
+  outputTokens: number | "UNAVAILABLE";
+  totalTokens: number | "UNAVAILABLE";
+  model?: string;
+  provider?: string;
+  source: UsageMeasurementType;
+  measurementType: UsageMeasurementType;
+}
 
 /**
  * A token-usage measurement with full provenance.

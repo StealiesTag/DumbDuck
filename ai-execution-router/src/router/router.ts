@@ -149,6 +149,7 @@ export async function routeTask(
         durationMs:    execResult.durationMs,
         output:        execResult.output,
         modelId:       execResult.modelId,
+        providerId:    execResult.providerId,
         tokenUsage:    execResult.tokenUsage,
       };
 
